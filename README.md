@@ -81,7 +81,7 @@ scripts\play-nvidia.ps1 -Exe <path of your copy's executable> -SeriesS -FrameGen
 `-SeriesS` is what was measured above (with DLSS Quality, the script's default once NVIDIA's files
 are there). Without it the script runs the Series X profile at 2560x1440, heavier on the card.
 
-**Frame generation on an RTX 30 card.** `-FrameGen` shows a generated frame between each two the
+**Frame generation on an RTX 30 card** (on by default; `-FrameGen:$false` turns it off) shows a generated frame between each two the
 game renders. On a card without DLSS frame generation (RTX 20 and 30) it is AMD's FSR 3. RTX 3060,
 from a chapter-one save, 8 minutes: 14.4 frames a second rendered (16.1 without it), about 28 to
 32 shown, the interface not doubled, no crash. NVIDIA's own DLSS frame generation also runs on an

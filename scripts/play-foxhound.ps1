@@ -43,6 +43,9 @@ param(
     [switch]$Preload,
     [hashtable]$More = @{}
 )
+# Frame generation on unless asked otherwise (-FrameGen:$false): on an RTX 20/30 card that is AMD FSR 3,
+# which on an RTX 3060 showed about twice the frames for ~5% of the rendered rate (README).
+if (-not $PSBoundParameters.ContainsKey('FrameGen')) { $FrameGen = [switch]::Present }
 $repo = Split-Path $PSScriptRoot -Parent
 # The F1 menu's "PRELOAD SHADERS" restarts this with -Preload (and VICTORY_PRELOAD=1, read here before the
 # switches below are cleared).
