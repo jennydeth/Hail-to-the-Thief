@@ -3,7 +3,7 @@
   "name": "Hail to the Thief",
   "tagline": "VIctory build for NVIDIA cards with 12GB or less",
   "rig": "RTX 3060 12GB · Ryzen 5 5600X · 32GB · Series S profile + DLSS Quality",
-  "notes": "Played by hand past the prologue into chapter one. Holds 16-21 fps in the opening room, with drops at cutscene transitions; frame generation (AMD FSR 3) shows about twice that on screen. No ray tracing yet; window glass looks frosted.",
+  "notes": "Played by hand past the prologue into chapter one. With AMD FSR 3 frame generation (on by default): about 29 fps shown in chapter one (14.4 rendered). Without it: 16-21 fps in the opening room, 13-16 in chapter one; drops at cutscene transitions. No ray tracing yet; window glass looks frosted.",
   "progress": {
     "loads": 1,
     "boots": 1,
@@ -12,7 +12,7 @@
     "playable": 1,
     "story": 0.25,
     "render": 0.5,
-    "fps": 19,
+    "fps": 29,
     "stability": "rarely"
   },
   "countdown": null
