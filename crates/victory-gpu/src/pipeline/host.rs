@@ -1227,6 +1227,22 @@ mod tests {
             eprintln!("no host depth bounds support; skipped");
             return;
         }
+        // WARP (CI's adapter) says it has the depth bounds test but does not
+        // reject by it: the test is the hardware's.
+        let software = {
+            use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIAdapter1, IDXGIFactory4};
+            // SAFETY: plain queries of the host's own adapter.
+            unsafe {
+                CreateDXGIFactory1::<IDXGIFactory4>()
+                    .and_then(|f| f.EnumAdapterByLuid::<IDXGIAdapter1>(host.device.GetAdapterLuid()))
+                    .and_then(|a| a.GetDesc1())
+                    .is_ok_and(|d| d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0)
+            }
+        };
+        if software {
+            eprintln!("software adapter (WARP): its depth bounds test does not reject; skipped");
+            return;
+        }
         let Some(dxc) = dxc() else {
             eprintln!("no PC dxc.exe; skipped");
             return;
