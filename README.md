@@ -2,8 +2,8 @@
 
 A build of [VIctory](https://github.com/Marvisak/VIctory) for **NVIDIA cards with 12 GB or less**,
 measured on an RTX 3060. It is [trustno1-coder's VIctory-NVIDIA](https://github.com/trustno1-coder/VIctory-NVIDIA)
-(built on [foxhound](https://github.com/readmet3xt-lab/foxhound)) as it is, with one fix on top.
-That fork's own README, with every option and what it measured:
+(built on [foxhound](https://github.com/readmet3xt-lab/foxhound)) with a few changes of our own on
+top (below). That fork's own README, with every option and what it measured:
 [docs/README-VIctory-NVIDIA.md](docs/README-VIctory-NVIDIA.md).
 
 Runs the Xbox Series X|S build of the game natively on Windows, from your own copy of its files.
@@ -11,35 +11,50 @@ Nothing here contains game data.
 
 ## Status on an RTX 3060 12 GB
 
-One machine so far: RTX 3060 12 GB (driver 621.40), Ryzen 5 5600X, 32 GB RAM, Windows 11. Runs of
-10 to 12 minutes in the same place (the first room of the opening), diag build, Series S profile
-(the world drawn at 1280x720, shown at 1920x1080), no frame rate cap.
+**Playable into chapter one, at about 29 frames a second on screen** with frame generation (AMD
+FSR 3, on by default), about 14 rendered.
 
-| Tree | Upscaling | Frame rate in the world (mean) | Once settled | Crashes / device removals |
-|---|---|---|---|---|
-| hyphennn's victory-fork | a stretch | 7.8 fps | - | 0 / 0 |
-| rorodev6's NVIDIA megafork | the title's own | 12.3 fps | about 12.8 | 0 / 0 |
-| this tree, cold shader cache | the title's own | 13.6 fps | 15 to 16.6 | 0 / 0 |
-| **this tree** | **DLSS Quality** | **15.3 to 18.6 fps** (two runs) | **16 to 21** | 0 / 0 |
+One machine so far: RTX 3060 12 GB (driver 621.40), Ryzen 5 5600X, 32 GB RAM, Windows 11, Series S
+profile (the world drawn at 1280x720, shown at 1920x1080), DLSS Quality, no frame rate cap.
 
-The gain over the megafork is on the processor: the thread that prepares each frame needs about
-37 ms instead of 48, and copying the card's writes back about 9 ms instead of 16. On this PC the
-processor, not the card, sets the frame rate.
+| Where | Rendered | Shown with frame generation | How it was measured |
+|---|---|---|---|
+| Opening room (prison cell) | 19 to 21 fps once settled | (not measured; about twice) | five 10-minute runs |
+| Chapter one (from a save at the Keys house) | 14.4 fps | **about 29 fps** (26 to 32) | 8-minute run, FSR 3 on |
+| Chapter one, played by hand | 13.5 fps (12 to 17, dips to 7 at scene loads) | (frame generation was off then) | 32 minutes in the world |
 
-**Not playable yet** on this card, but it holds 16 to 21 fps in the opening room.
+The story has been played by hand past the prologue into chapter one; the HUD, prompts, saves and
+the pause menu work. No crash and no device removal in about 70 test runs and that session on
+this tree and the ones before it here.
+
+Frame generation doubles what is on screen; the game itself still runs, and answers the controls,
+at the rendered rate. The limit is the processor: most of a frame is the game's own
+code and the layer's work on the CPU, and the card waits.
+
+How it got here on this PC (rendered, opening room): 2.8 fps on AvatarManz's tree, 6.4 on
+hyphennn's, 7.8 with Series S, 12.6 on the NVIDIA megafork, 19 to 21 on this base.
 
 Known problems:
 
-- **No ray tracing** (the title's own is off): an estimate stands in for indirect light.
-- **The window glass in the first room looks frosted** in both runs on this tree; not checked
-  against the console.
-- **DLSS frame generation needs an RTX 40 or 50**; on an RTX 30 card `-FrameGen` uses AMD FSR 3 instead (see below).
+- **No ray tracing** (the title's own is off: it costs most of the frame rate on this card). An
+  estimate stands in for indirect light and reflections; tune it while playing (below).
+- **Stutter when a scene loads or a cutscene cuts**: two to three times the usual memory to copy,
+  and pipelines still being made (F1, PRELOAD SHADERS, makes them all ahead).
+- **The window glass in the first room looks frosted**, and **eyes look washed out** in close-ups.
+- **The water's own light** is left out on 32-lane cards here (a fix exists in hyphennn's tree).
+- **DLSS frame generation needs an RTX 40 or 50**; on RTX 20 and 30 cards it is AMD's FSR 3
+  (NVIDIA's also runs on an RTX 3060 with the MFG Unlocker mod; see below).
 
 ## What is different here
 
+- **Frame generation on by default** in `scripts\play-nvidia.ps1` (`-FrameGen:$false` turns it
+  off); trustno1's FSR 3 path on cards without DLSS frame generation.
+- **The light estimate tuned for this card and live**: 1.1 for the light and 0.5,0.5 for
+  reflections (1.5 and full reflections looked too bright and off in play, 0.8 too dark), read
+  again from `lighting.txt` twice a second while the game runs.
 - **Our own shaders are compiled with IEEE strictness.** Without it the compiler may fold away the
-  NaN tests of the stand-in for the indirect light; on hyphennn's tree the shade then went black
-  for good after a few minutes in half the runs. Not measured on this tree yet.
+  NaN tests of the light estimate; on hyphennn's tree the shade then went black for good after a
+  few minutes in half the runs.
 - **foxhound's newest change** (`9f8838b1`, not yet in VIctory-NVIDIA): samplers made in one fixed
   order so the driver finds saved pipelines again, the cloud tile sort and violet light estimate
   fixes, a buffer pool, a VRAM limit, and a folder accepted for `-Exe`. Same frame rate here as
