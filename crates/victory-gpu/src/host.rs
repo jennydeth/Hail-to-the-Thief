@@ -1470,7 +1470,7 @@ pub(crate) fn compile(
     entry: windows::core::PCSTR,
     target: windows::core::PCSTR,
 ) -> windows::core::Result<Vec<u8>> {
-    use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
+    use windows::Win32::Graphics::Direct3D::Fxc::{D3DCOMPILE_IEEE_STRICTNESS, D3DCompile};
     use windows::Win32::Graphics::Direct3D::ID3DBlob;
     let mut code: Option<ID3DBlob> = None;
     let mut errors: Option<ID3DBlob> = None;
@@ -1484,7 +1484,11 @@ pub(crate) fn compile(
             None,
             entry,
             target,
-            0,
+            // IEEE strictness: without it the compiler may fold `isnan` /
+            // `isinf` tests away, and the stand-in for the indirect light
+            // (`crate::ambient`) relies on them to keep a NaN in the title's
+            // image out of its slow mean.
+            D3DCOMPILE_IEEE_STRICTNESS,
             0,
             &mut code,
             Some(&mut errors),
