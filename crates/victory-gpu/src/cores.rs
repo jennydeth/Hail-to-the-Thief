@@ -2,9 +2,9 @@
 //! of cores. `cpu_sets` and `keep_on_fast_cores` are fxceless/victory-fork's
 //! (`framelog.rs`, commit 0b0074e0, GPL-3.0-or-later, as this).
 
-/// The system's processor sets of group 0: each one's id and its efficiency
-/// class (higher is faster).
-fn cpu_sets() -> Vec<(u32, u8)> {
+/// The system's processor sets of group 0: each one's id, its efficiency
+/// class (higher is faster) and its core (which two of them may share).
+fn cpu_sets() -> Vec<(u32, u8, u8)> {
     use windows_sys::Win32::System::SystemInformation::{GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION};
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
     let mut bytes = 0u32;
@@ -24,7 +24,7 @@ fn cpu_sets() -> Vec<(u32, u8)> {
         // SAFETY: the record's type is CpuSet (the only one there is).
         let set = unsafe { &info.Anonymous.CpuSet };
         if set.Group == 0 {
-            sets.push((set.Id, set.EfficiencyClass));
+            sets.push((set.Id, set.EfficiencyClass, set.CoreIndex));
         }
         at += info.Size as usize;
     }
@@ -32,10 +32,55 @@ fn cpu_sets() -> Vec<(u32, u8)> {
 }
 
 /// The sets of the fastest class, if there are slower ones too.
-fn fast_of(sets: &[(u32, u8)]) -> Vec<u32> {
+fn fast_of(sets: &[(u32, u8, u8)]) -> Vec<u32> {
     let best = sets.iter().map(|c| c.1).max().unwrap_or(0);
     let fast: Vec<u32> = sets.iter().filter(|c| c.1 == best).map(|c| c.0).collect();
     if fast.len() == sets.len() { Vec::new() } else { fast }
+}
+
+/// The sets of one fast core, the last, and all the others, for
+/// [`lane_core`]; `None` with fewer than six fast cores. Where all cores are
+/// of one class (a Ryzen 5 5600X: six cores, twelve sets) every core counts
+/// as fast. `one_core` and `lane_core` are rorodev6/victory-megafork-amd's
+/// (`cores.rs`, commit 11511b81, GPL-3.0-or-later, as this).
+fn one_core(sets: &[(u32, u8, u8)]) -> Option<(Vec<u32>, Vec<u32>)> {
+    let best = sets.iter().map(|c| c.1).max()?;
+    let mut cores: Vec<u8> = sets.iter().filter(|c| c.1 == best).map(|c| c.2).collect();
+    cores.sort_unstable();
+    cores.dedup();
+    let core = *cores.last().filter(|_| cores.len() >= 6)?;
+    let of = |own: bool| sets.iter().filter(|c| (c.2 == core) == own).map(|c| c.0).collect();
+    Some((of(true), of(false)))
+}
+
+/// Whether the submitting thread has a core to itself, as far as this
+/// process goes (`VICTORY_LANE_CORE=1`; off by default): it runs on that
+/// core's two sets only, and every other thread of the process, the title's
+/// included, keeps off them. It is the thread a frame waits for.
+fn lane_core() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_LANE_CORE").is_some_and(|v| v == "1"))
+}
+
+/// Gives the calling (submitting) thread a core of its own ([`lane_core`]).
+/// False if the processor has too few cores for it, or the system refused.
+fn take_lane_core() -> bool {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThread, SetProcessDefaultCpuSets, SetThreadSelectedCpuSets};
+    let sets = cpu_sets();
+    let Some((own, others)) = one_core(&sets) else {
+        tracing::warn!(sets = sets.len(), "VICTORY_LANE_CORE=1: fewer than six cores of the fastest class, nothing done");
+        return false;
+    };
+    // SAFETY: our own process and thread, and the system's own set ids.
+    let (process, thread) = unsafe {
+        (
+            SetProcessDefaultCpuSets(GetCurrentProcess(), others.as_ptr(), others.len() as u32),
+            SetThreadSelectedCpuSets(GetCurrentThread(), own.as_ptr(), own.len() as u32),
+        )
+    };
+    let ok = process != 0 && thread != 0;
+    tracing::info!(ok, ?own, others = others.len(), "the submitting thread has a core of its own (VICTORY_LANE_CORE)");
+    ok
 }
 
 /// `VICTORY_FAST_CORES`: 0: no thread asks; 1: the threads a frame waits for
@@ -89,6 +134,9 @@ fn ask(what: &str, from: u32) {
         // SAFETY: this thread's own priority.
         let set = unsafe { SetThreadPriority(GetCurrentThread(), priority) } != 0;
         tracing::debug!(what, priority, set, "the thread's priority (VICTORY_HELPER_PRIORITY)");
+    }
+    if what == "victory-submit" && lane_core() && take_lane_core() {
+        return;
     }
     if stage() < from {
         return;
@@ -165,10 +213,26 @@ mod tests {
 
     #[test]
     fn the_fast_cores_are_those_of_the_best_class_if_there_is_a_worse_one() {
-        assert_eq!(fast_of(&[(256, 1), (257, 1), (258, 0)]), [256, 257]);
-        assert!(fast_of(&[(256, 0), (257, 0)]).is_empty());
+        assert_eq!(fast_of(&[(256, 1, 0), (257, 1, 0), (258, 0, 2)]), [256, 257]);
+        assert!(fast_of(&[(256, 0, 0), (257, 0, 1)]).is_empty());
         assert!(fast_of(&[]).is_empty());
         assert!(!cpu_sets().is_empty());
         std::thread::spawn(|| keep_on_fast_cores("test")).join().unwrap();
+    }
+
+    #[test]
+    fn the_lane_core_is_the_last_of_six_or_more() {
+        // Six cores of one class, two sets each (a Ryzen 5 5600X): the last core.
+        let six: Vec<(u32, u8, u8)> = (0..12).map(|n| (256 + n, 0, (n / 2) as u8)).collect();
+        let (own, others) = one_core(&six).unwrap();
+        assert_eq!((own, others.len()), (vec![266, 267], 10));
+        // Four cores: too few.
+        let four: Vec<(u32, u8, u8)> = (0..8).map(|n| (256 + n, 0, (n / 2) as u8)).collect();
+        assert!(one_core(&four).is_none());
+        // Eight fast cores and eight slow ones: the last fast core.
+        let mixed: Vec<(u32, u8, u8)> =
+            (0..16).map(|n| (n, 1, n as u8 / 2 * 2)).chain((16..24).map(|n| (n, 0, n as u8))).collect();
+        let (own, others) = one_core(&mixed).unwrap();
+        assert_eq!((own, others.len()), (vec![14, 15], 22));
     }
 }
