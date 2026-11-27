@@ -1,0 +1,17 @@
+# Copy this file to lighting.txt (beside it) to tune the light that stands in for the title's
+# ray-traced indirect light while the game runs: save the file and the change shows within half a
+# second. Remove a line to go back to the launcher's value; delete lighting.txt to stop.
+#
+# AMBIENT: how strong the estimated indirect light is (shade, interiors). A number is a share of
+# the estimate (the launcher uses 0.8; 1 is all of it); constant:<level> is a flat light instead;
+# off turns it off.
+AMBIENT=0.8
+# AMBIENT_AIR: the most the air (haze, fog in rooms) may scatter, as a multiple of the light
+# around it (the launcher uses 1.5; lower is clearer, higher is hazier).
+AMBIENT_AIR=1.5
+# AMBIENT_SPECULAR: reflections where the title's rays found nothing take this share of the
+# estimate (the launcher uses 1; 0 leaves the title's sky in them).
+AMBIENT_SPECULAR=1
+# AMBIENT_SHADE: <strength>,<radius in metres> of the shade in creases and corners (1,0.6 when not
+# given).
+AMBIENT_SHADE=1,0.6

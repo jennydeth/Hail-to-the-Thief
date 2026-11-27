@@ -119,6 +119,10 @@ $settings.VICTORY_MENU_DLSS = if ($settings.VICTORY_DLSS -eq '1') { $Dlss } else
 $settings.VICTORY_MENU_FRAMEGEN = if ($settings.VICTORY_FRAMEGEN -eq '1') { [string]$settings.VICTORY_FRAMEGEN_X } else { '0' }
 $settings.VICTORY_MENU_FPS = [string]$fpsWanted
 $settings.VICTORY_MENU_FILE = $menuFile
+# lighting.txt beside this repository's README, if there is one: the light estimate's settings, read again
+# twice a second while the title runs (lighting.example.txt says how).
+$lighting = Join-Path $repo 'lighting.txt'
+if (Test-Path -LiteralPath $lighting -PathType Leaf) { $settings.VICTORY_AMBIENT_FILE = $lighting }
 $settings.VICTORY_MENU_PLAY = $MyInvocation.MyCommand.Path
 $settings.VICTORY_MENU_ARGS = "-Exe '$($Exe -replace "'", "''")' -Build $Build$(if ($NoFrameGenReady) { ' -NoFrameGenReady' })"
 

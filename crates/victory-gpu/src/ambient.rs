@@ -127,7 +127,70 @@ fn parse(set: &str) -> Set {
     }
 }
 
+/// `VICTORY_AMBIENT_FILE=<file>`: the stand-in's settings read from a file
+/// again twice a second, to tune them by eye in a running game. Each line is
+/// `NAME=value` for `VICTORY_AMBIENT`, `VICTORY_AMBIENT_AIR`,
+/// `VICTORY_AMBIENT_SPECULAR` or `VICTORY_AMBIENT_SHADE` (the `VICTORY_` may
+/// be left out); a line without `=` first in the file is `VICTORY_AMBIENT`.
+/// What the file does not name keeps the environment's value. The idea is
+/// Belobug's (VIctory-Belobug-AMD), first written for `VICTORY_AMBIENT`
+/// alone in Spaghetih/victory-sley-fork 376bdfa6 (GPL-3.0-or-later).
+fn live() -> Option<std::sync::Arc<Vec<(String, String)>>> {
+    static FILE: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+    let file = FILE
+        .get_or_init(|| std::env::var_os("VICTORY_AMBIENT_FILE").filter(|v| !v.is_empty()).map(Into::into))
+        .as_ref()?;
+    type Read = (std::time::Instant, std::sync::Arc<Vec<(String, String)>>);
+    static LAST: Mutex<Option<Read>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((read, values)) = last.as_ref()
+        && read.elapsed().as_millis() < 500
+    {
+        return Some(values.clone());
+    }
+    let values = std::sync::Arc::new(parse_file(&std::fs::read_to_string(file).unwrap_or_default()));
+    if last.as_ref().is_none_or(|(_, was)| **was != *values) {
+        tracing::info!(?values, "the indirect light's stand-in set from VICTORY_AMBIENT_FILE");
+    }
+    *last = Some((std::time::Instant::now(), values.clone()));
+    Some(values)
+}
+
+/// The file's settings, by their full names.
+fn parse_file(text: &str) -> Vec<(String, String)> {
+    let mut values = Vec::new();
+    for (i, line) in text.lines().map(str::trim).enumerate() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (name, value) = match line.split_once('=') {
+            Some((name, value)) => (name.trim().to_ascii_uppercase(), value.trim()),
+            None if i == 0 => ("VICTORY_AMBIENT".to_owned(), line),
+            None => continue,
+        };
+        let name = if name.starts_with("VICTORY_") { name } else { format!("VICTORY_{name}") };
+        values.push((name, value.to_owned()));
+    }
+    values
+}
+
+/// A setting of the stand-in: the live file's if it names it, else the
+/// environment's. `None` without a live file (each setting is read once).
+fn live_value(name: &str) -> Option<String> {
+    let values = live()?;
+    Some(
+        values
+            .iter()
+            .rev()
+            .find(|(n, _)| n == name)
+            .map_or_else(|| std::env::var(name).unwrap_or_default(), |(_, v)| v.clone()),
+    )
+}
+
 fn set() -> Set {
+    if let Some(v) = live_value("VICTORY_AMBIENT") {
+        return parse(&v);
+    }
     static SET: OnceLock<Set> = OnceLock::new();
     *SET.get_or_init(|| parse(&std::env::var("VICTORY_AMBIENT").unwrap_or_default()))
 }
@@ -157,6 +220,9 @@ fn parse_specular(set: &str) -> Option<Specular> {
 }
 
 fn specular() -> Option<Specular> {
+    if let Some(v) = live_value("VICTORY_AMBIENT_SPECULAR") {
+        return parse_specular(&v);
+    }
     static SET: OnceLock<Option<Specular>> = OnceLock::new();
     *SET.get_or_init(|| parse_specular(&std::env::var("VICTORY_AMBIENT_SPECULAR").unwrap_or_default()))
 }
@@ -184,26 +250,30 @@ fn once() -> bool {
 /// The most the air scatters, as a multiple of the light around
 /// (`VICTORY_AMBIENT_AIR=<multiple>`; unset or 0: what the title has).
 fn air() -> f32 {
+    let parse_air = |set: &str| set.trim().parse().ok().filter(|v: &f32| v.is_finite() && *v > 0.0).unwrap_or(0.0);
+    if let Some(v) = live_value("VICTORY_AMBIENT_AIR") {
+        return parse_air(&v);
+    }
     static SET: OnceLock<f32> = OnceLock::new();
-    *SET.get_or_init(|| {
-        let set = std::env::var("VICTORY_AMBIENT_AIR").unwrap_or_default();
-        set.trim().parse().ok().filter(|v: &f32| v.is_finite() && *v > 0.0).unwrap_or(0.0)
-    })
+    *SET.get_or_init(|| parse_air(&std::env::var("VICTORY_AMBIENT_AIR").unwrap_or_default()))
 }
 
 /// Strength and radius of the creases' shade.
 fn shade() -> [f32; 2] {
-    static SET: OnceLock<[f32; 2]> = OnceLock::new();
-    *SET.get_or_init(|| {
+    let parse_shade = |set: &str| {
         let mut shade = [1.0, 0.6];
-        let set = std::env::var("VICTORY_AMBIENT_SHADE").unwrap_or_default();
         for (to, v) in shade.iter_mut().zip(set.split(',')) {
             if let Ok(v) = v.trim().parse() {
                 *to = v;
             }
         }
         shade
-    })
+    };
+    if let Some(v) = live_value("VICTORY_AMBIENT_SHADE") {
+        return parse_shade(&v);
+    }
+    static SET: OnceLock<[f32; 2]> = OnceLock::new();
+    *SET.get_or_init(|| parse_shade(&std::env::var("VICTORY_AMBIENT_SHADE").unwrap_or_default()))
 }
 
 const SOURCE: &str = r#"
@@ -771,6 +841,17 @@ pub(crate) fn after(list: &HostList, role: Role, views: &Views) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_live_file() {
+        let pair = |n: &str, v: &str| (n.to_owned(), v.to_owned());
+        assert_eq!(parse_file("constant:1.2\n"), [pair("VICTORY_AMBIENT", "constant:1.2")]);
+        assert_eq!(
+            parse_file("# tuning\nAMBIENT=1.1\nvictory_ambient_air = 2\nVICTORY_AMBIENT_SHADE=0.5,0.8\nnot a setting\n"),
+            [pair("VICTORY_AMBIENT", "1.1"), pair("VICTORY_AMBIENT_AIR", "2"), pair("VICTORY_AMBIENT_SHADE", "0.5,0.8")]
+        );
+        assert!(parse_file("").is_empty());
+    }
 
     #[test]
     fn settings() {
