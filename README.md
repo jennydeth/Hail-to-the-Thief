@@ -40,6 +40,10 @@ Known problems:
 - **Our own shaders are compiled with IEEE strictness.** Without it the compiler may fold away the
   NaN tests of the stand-in for the indirect light; on hyphennn's tree the shade then went black
   for good after a few minutes in half the runs. Not measured on this tree yet.
+- **foxhound's newest change** (`9f8838b1`, not yet in VIctory-NVIDIA): samplers made in one fixed
+  order so the driver finds saved pipelines again, the cloud tile sort and violet light estimate
+  fixes, a buffer pool, a VRAM limit, and a folder accepted for `-Exe`. Same frame rate here as
+  without it (19.7 and 18.6 fps mean, 20.1 and 20.6 once settled, a cold and a warm run).
 
 ## Tried on this PC, no gain
 
