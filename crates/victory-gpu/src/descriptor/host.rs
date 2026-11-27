@@ -121,6 +121,119 @@ impl Made {
     }
 }
 
+/// Packed bitset of taken dynamic slots (`1` = taken, `0` = free).
+/// Trailing padding bits past `len` in the final word stay set (`1`) so
+/// word-level scans stop cleanly at `len`.
+struct DynamicBits {
+    words: Vec<u64>,
+    len: usize,
+}
+
+impl DynamicBits {
+    fn new(len: usize) -> Self {
+        let mut words = vec![0u64; len.div_ceil(64)];
+        let tail = len % 64;
+        if tail != 0 {
+            *words.last_mut().expect("non-empty when tail != 0") = !0u64 << tail;
+        }
+        Self { words, len }
+    }
+
+    #[cfg(any(feature = "diagnostics", test))]
+    fn get(&self, index: usize) -> Option<bool> {
+        (index < self.len).then(|| (self.words[index / 64] >> (index % 64)) & 1 != 0)
+    }
+
+    /// First contiguous run of `n` free (`0`) bits inside `[start, end)`.
+    fn find_run_in(&self, start: usize, end: usize, n: usize) -> Option<usize> {
+        let end = end.min(self.len);
+        if n == 0 || end.saturating_sub(start) < n {
+            return None;
+        }
+        let mut run = 0usize;
+        let mut run_start = start;
+        let mut idx = start;
+        while idx < end {
+            let w_idx = idx / 64;
+            let bit = idx % 64;
+            let remain = (64 - bit).min(end - idx);
+            let mut w = self.words[w_idx] >> bit;
+            if remain < 64 {
+                w |= !0u64 << remain;
+            }
+            if w == 0 {
+                if run == 0 {
+                    run_start = idx;
+                }
+                run += remain;
+                if run >= n {
+                    return Some(run_start);
+                }
+                idx += remain;
+                continue;
+            }
+            if w == u64::MAX {
+                run = 0;
+                idx += remain;
+                continue;
+            }
+            let mut pos = 0usize;
+            while pos < remain {
+                let free = ((w >> pos).trailing_zeros() as usize).min(remain - pos);
+                if free > 0 {
+                    if run == 0 {
+                        run_start = idx + pos;
+                    }
+                    run += free;
+                    if run >= n {
+                        return Some(run_start);
+                    }
+                    pos += free;
+                }
+                if pos < remain {
+                    let taken = ((w >> pos).trailing_ones() as usize).min(remain - pos);
+                    run = 0;
+                    pos += taken;
+                }
+            }
+            idx += remain;
+        }
+        None
+    }
+
+    fn set_range(&mut self, first: usize, n: usize) {
+        let end = first.saturating_add(n).min(self.len);
+        let mut idx = first;
+        while idx < end {
+            let w_idx = idx / 64;
+            let bit = idx % 64;
+            let take = (64 - bit).min(end - idx);
+            let mask = if take == 64 { u64::MAX } else { ((1u64 << take) - 1) << bit };
+            self.words[w_idx] |= mask;
+            idx += take;
+        }
+    }
+
+    /// Clears `[first, end)` (clamped to `self.len`) and returns how many bits
+    /// were previously set.
+    fn clear_range(&mut self, first: usize, end: usize) -> u32 {
+        let end = end.min(self.len);
+        let mut idx = first;
+        let mut cleared = 0u32;
+        while idx < end {
+            let w_idx = idx / 64;
+            let bit = idx % 64;
+            let take = (64 - bit).min(end - idx);
+            let mask = if take == 64 { u64::MAX } else { ((1u64 << take) - 1) << bit };
+            let prev = self.words[w_idx];
+            cleared += (prev & mask).count_ones();
+            self.words[w_idx] = prev & !mask;
+            idx += take;
+        }
+        cleared
+    }
+}
+
 static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 pub(crate) struct HostHeap {
@@ -174,8 +287,8 @@ pub(crate) struct HostHeap {
     /// made for a draw takes it, and lets go of what the slot held under it).
     kept: Box<[Mutex<Option<ID3D12Resource>>]>,
     /// Where the search for free dynamic slots starts, and which are taken
-    /// (by lists not yet reset).
-    next: Mutex<(u32, Vec<bool>)>,
+    /// (by lists not yet reset), packed as a 64-bit word bitset.
+    next: Mutex<(u32, DynamicBits)>,
     /// How many dynamic slots are free (changed under `next`'s lock): with
     /// fewer than a table needs, the search is not made. Once the world
     /// had taken them all, every later table of the frame searched every
@@ -1774,7 +1887,7 @@ pub(crate) fn slot_story(slot: u32) -> String {
         let mut text = if index < host.count {
             format!("title slot {index}, made from {}", host.describe_slot(index).unwrap_or_default())
         } else {
-            let taken = host.next.lock().unwrap_or_else(|e| e.into_inner()).1.get((index - host.count) as usize).copied();
+            let taken = host.next.lock().unwrap_or_else(|e| e.into_inner()).1.get((index - host.count) as usize);
             format!("dynamic slot {} (taken {taken:?})", index - host.count)
         };
         if twin {
@@ -2068,7 +2181,7 @@ impl HostHeap {
             waiting: Mutex::default(),
             away: Mutex::default(),
             kept: (0..count + extra).map(|_| Mutex::new(None)).collect(),
-            next: Mutex::new((0, vec![false; extra as usize])),
+            next: Mutex::new((0, DynamicBits::new(extra as usize))),
             free: std::sync::atomic::AtomicU32::new(extra),
             too_long: std::sync::atomic::AtomicU32::new(u32::MAX),
             strides,
@@ -2256,22 +2369,13 @@ impl HostHeap {
         let cursor = *next as usize;
         let end = self.dynamic as usize;
         let second_end = cursor.saturating_add(n.saturating_sub(1)).min(end);
-        let starts = (cursor..end).chain(0..second_end);
-        let mut run = 0;
-        let mut found = None;
-        let mut last = usize::MAX;
-        for at in starts.take(if enough { usize::MAX } else { 0 }) {
-            // A run cannot wrap past the end.
-            if at != last.wrapping_add(1) {
-                run = 0;
-            }
-            last = at;
-            run = if taken[at] { 0 } else { run + 1 };
-            if run == n {
-                found = Some(at + 1 - n);
-                break;
-            }
-        }
+        let found = if enough {
+            taken
+                .find_run_in(cursor, end, n)
+                .or_else(|| taken.find_run_in(0, second_end, n))
+        } else {
+            None
+        };
         let Some(first) = found else {
             if enough {
                 self.too_long.fetch_min(n as u32, std::sync::atomic::Ordering::Relaxed);
@@ -2288,7 +2392,7 @@ impl HostHeap {
         };
         #[cfg(feature = "diagnostics")]
         crate::copystat::add(crate::copystat::C::DynamicNs, started.elapsed().as_nanos() as u64);
-        taken[first..first + n].fill(true);
+        taken.set_range(first, n);
         self.free.fetch_sub(n as u32, std::sync::atomic::Ordering::Relaxed);
         *next = ((first + n) % end) as u32;
         Some(self.count + first as u32)
@@ -3434,12 +3538,11 @@ impl HostHeap {
             return;
         };
         let mut guard = self.next.lock().unwrap_or_else(|e| e.into_inner());
-        let end = (at + n).min(self.dynamic) as usize;
-        if let Some(slots) = guard.1.get_mut(at as usize..end) {
-            let given = slots.iter().filter(|taken| **taken).count() as u32;
+        let end = at.saturating_add(n).min(self.dynamic) as usize;
+        if (at as usize) < end {
+            let given = guard.1.clear_range(at as usize, end);
             self.free.fetch_add(given, std::sync::atomic::Ordering::Relaxed);
             self.too_long.store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
-            slots.fill(false);
         }
     }
 
@@ -7030,5 +7133,71 @@ mod bake_flip_tests {
         assert_eq!(cb1(), None);
         drop(cb2);
         assert!(take_pending_list_flip(id2).is_none(), "dropping uncalled closure cleans up entry");
+    }
+
+    #[test]
+    fn dynamic_bits_matches_reference_ring_search_and_bounds() {
+        fn ref_find(taken: &[bool], cursor: usize, n: usize) -> Option<usize> {
+            let end = taken.len();
+            let second_end = cursor.saturating_add(n.saturating_sub(1)).min(end);
+            let mut run = 0;
+            let mut last = usize::MAX;
+            for at in (cursor..end).chain(0..second_end) {
+                if at != last.wrapping_add(1) {
+                    run = 0;
+                }
+                last = at;
+                run = if taken[at] { 0 } else { run + 1 };
+                if run == n {
+                    return Some(at + 1 - n);
+                }
+            }
+            None
+        }
+
+        // Non-multiple-of-64 length to exercise trailing padding bits.
+        for len in [1usize, 63, 64, 65, 131, 300] {
+            let mut bits = DynamicBits::new(len);
+            let mut reference = vec![false; len];
+            let mut cursor = 0usize;
+            let mut seed = 0x9e37_79b9_7f4a_7c15u64 ^ (len as u64);
+            let mut next_u64 = || {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed
+            };
+            let mut held: Vec<(usize, usize)> = Vec::new();
+            for _ in 0..400 {
+                if !held.is_empty() && next_u64() % 3 == 0 {
+                    let i = (next_u64() as usize) % held.len();
+                    let (first, n) = held.swap_remove(i);
+                    let end = (first + n).min(len);
+                    let ref_cleared = reference[first..end].iter().filter(|t| **t).count() as u32;
+                    reference[first..end].fill(false);
+                    assert_eq!(bits.clear_range(first, end), ref_cleared);
+                    // Double-clearing must report 0 and never touch trailing padding bits.
+                    assert_eq!(bits.clear_range(first, end), 0);
+                } else {
+                    let n = ((next_u64() as usize) % (len.min(80))) + 1;
+                    let second_end = cursor.saturating_add(n.saturating_sub(1)).min(len);
+                    let got = bits
+                        .find_run_in(cursor, len, n)
+                        .or_else(|| bits.find_run_in(0, second_end, n));
+                    let want = ref_find(&reference, cursor, n);
+                    assert_eq!(got, want, "len={len} cursor={cursor} n={n}");
+                    if let Some(first) = got {
+                        bits.set_range(first, n);
+                        reference[first..first + n].fill(true);
+                        cursor = (first + n) % len;
+                        held.push((first, n));
+                    }
+                }
+            }
+            for i in 0..len {
+                assert_eq!(bits.get(i), Some(reference[i]));
+            }
+            assert_eq!(bits.get(len), None);
+        }
     }
 }
