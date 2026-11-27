@@ -84,7 +84,7 @@ F1 in the game opens the settings menu, F3 the stats panel.
 
 **Lighting by eye:** copy `lighting.example.txt` to `lighting.txt` before starting, then edit and
 save it while you play: the light that stands in for the title's ray tracing follows within half
-a second, at no cost in frame rate (1.5 in place of the default 0.8 lightens the shade clearly).
+a second, at no cost in frame rate. The default is 1.5 (it was 0.8: the shade is clearly lighter now).
 
 ## Credits
 
