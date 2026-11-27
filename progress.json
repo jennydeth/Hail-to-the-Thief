@@ -1,0 +1,19 @@
+{
+  "updated": "2026-11-27",
+  "name": "Hail to the Thief",
+  "tagline": "VIctory build for NVIDIA cards with 12GB or less",
+  "rig": "RTX 3060 12GB · Ryzen 5 5600X · 32GB · Series S profile + DLSS Quality",
+  "notes": "Holds 16-21 fps in the opening room. No ray tracing yet; window glass looks frosted.",
+  "progress": {
+    "loads": 1,
+    "boots": 1,
+    "menu": 1,
+    "world": 1,
+    "playable": 0.5,
+    "story": 0,
+    "render": 0.5,
+    "fps": 17,
+    "stability": "rarely"
+  },
+  "countdown": null
+}
