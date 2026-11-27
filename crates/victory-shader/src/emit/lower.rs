@@ -560,51 +560,6 @@ pub(super) fn branches_around(st: &Structured, needs: &[usize]) -> Option<Vec<us
     Some(out)
 }
 
-/// The per-lane branches (by block) that close a loop or leave one, whose wave-wide meaning
-/// is known ([`Structured::wave_any`]): the ones a host wave takes together
-/// ([`crate::structure::structure_wide_host`]) so that its lanes stay one wave behind the
-/// loop. Not the branches the wave takes together already, nor those on scalar conditions.
-pub(super) fn loop_branches(p: &Program, st: &Structured) -> HashSet<usize> {
-    let n = p.blocks.len();
-    let mut rpo = vec![usize::MAX; n];
-    for (i, b) in crate::ir::reverse_postorder(&p.blocks).into_iter().enumerate() {
-        rpo[b] = i;
-    }
-    let succ = |b: usize| -> Vec<usize> {
-        match p.blocks[b].exit {
-            Exit::Jump(t) => vec![t],
-            Exit::Branch { taken, not_taken } => vec![taken, not_taken],
-            _ => Vec::new(),
-        }
-    };
-    let mut out = HashSet::new();
-    for latch in (0..n).filter(|&b| rpo[b] != usize::MAX) {
-        for head in succ(latch).into_iter().filter(|&h| rpo[h] <= rpo[latch]) {
-            // the loop's blocks: the head, and what reaches the latch without passing it
-            let mut body = vec![false; n];
-            body[head] = true;
-            let mut stack = vec![latch];
-            while let Some(b) = stack.pop() {
-                if body[b] {
-                    continue;
-                }
-                body[b] = true;
-                stack.extend(p.blocks[b].preds.iter().copied().filter(|&q| rpo[q] != usize::MAX));
-            }
-            for b in (0..n).filter(|&b| body[b]) {
-                let LaneExit::Branch { when, taken, not_taken } = st.exits[b] else { continue };
-                let leaves = !body[taken] || !body[not_taken] || b == latch;
-                let per_lane = !st.wide.contains(&b)
-                    && !st.bools.support(when).iter().all(|a| matches!(a, Atom::Uniform(_)));
-                if leaves && per_lane && st.wave_any.get(b).copied().flatten().is_some() {
-                    out.insert(b);
-                }
-            }
-        }
-    }
-    out
-}
-
 /// Whether accesses outside a program's own shared memory are done as the console does them
 /// (reads give 0, writes are dropped; `VICTORY_LDS_BOUNDS=0`: taken as inside, as before).
 fn lds_bounds() -> bool {
