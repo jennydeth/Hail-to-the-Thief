@@ -1,5 +1,43 @@
 # VIctory on NVIDIA
 
+> **Reporting a problem?** Please attach **both** logs from the run that went
+> wrong. Without them we can only guess. Paste `%LOCALAPPDATA%` into the address
+> bar of File Explorer to get there.
+>
+> 1. **The play log**, in `%LOCALAPPDATA%\victory\logs\`: the newest
+>    `victory-nvidia-play-<date>-<time>-<number>.log` (from `victory.exe`) or
+>    `victory-nvidia-<date>-<time>.log` (from the script launcher). The window
+>    shows its path at the start, on the line `Log: ...`.
+> 2. **The crash log**: `%LOCALAPPDATA%\VIctory\data\7952987A\crashes.log`, and,
+>    if there is one from that run, the newest `victory-<date>-<time>-<number>.crash.log`
+>    in `%LOCALAPPDATA%\VIctory\data\7952987A\temp\`.
+>
+> Also say which GPU, Windows version (10 or 11) and release you used.
+
+## Frame generation: what your card supports
+
+| Your card | Frame generation | Limits |
+| --- | --- | --- |
+| GeForce RTX 40 and RTX 50 | **DLSS frame generation** | 2x on RTX 40; more than 2x (up to 6x) needs an RTX 50 |
+| GeForce RTX 20 and RTX 30 | **AMD FSR 3 frame generation** (DLSS frame generation needs an RTX 40 or later) | **2x at most**. DLSS upscaling still works on these cards, so the Series X profile is fine |
+| Other cards (no DLSS) | **AMD FSR 3 frame generation** | **2x at most, Series S profile only** (F1 menu, CONSOLE): without DLSS the game's own upscaler, which FSR 3 needs, only takes the Series S sizes. Not tested here |
+
+- **At every start the game tells you** which one your card runs, and why
+  not if it can't, at the top of the picture for the first 30 seconds (and
+  in the console window).
+- **F1 menu, FRAME GEN TYPE**: AUTO (DLSS where the card has it, else FSR 3),
+  DLSS, or FSR 3 (also on an RTX 40/50, if you prefer it). FRAME GENERATION
+  switches it off or on.
+- FSR 3 needs AMD's FidelityFX DLLs (`amd_fidelityfx_loader_dx12.dll` and
+  `amd_fidelityfx_framegeneration_dx12.dll`, about 30 MB). They are AMD's and
+  not part of this program. On a card without DLSS frame generation (or with
+  FSR 3 chosen in F1) the first start of `victory.exe` asks once whether to
+  download them from AMD's own GitHub (the FidelityFX SDK);
+  `victory.exe get-fsr` does it later, and `Get-AMD-FSR.cmd` does it for the
+  script launcher. Each file is checked against the copy this fork was tested
+  with, and only loaded with AMD's valid signature. A `fidelityfx` folder next
+  to `victory.exe`, or `VICTORY_FIDELITYFX_DIR`, works too.
+
 ## Quick start: how to run it
 
 **The easy way: one file, nothing to build**
@@ -15,11 +53,38 @@
   generation files (about 70 MB) from NVIDIA's own GitHub. They are NVIDIA's
   and are not part of this program; say no and the game still runs, with its
   own upscaling and no frame generation.
-- Nothing is written into your game folder: settings, saves, caches, logs and
-  NVIDIA's files are kept under `%LOCALAPPDATA%\victory`.
+- Settings, saves, caches, logs and NVIDIA's and AMD's files are kept under
+  `%LOCALAPPDATA%\victory`. The one exception is on Windows 10. Its own Direct3D 12
+  stops at shader model 6.5, and the game's translated shaders need 6.6. Without
+  6.6 the game shows a black screen and closes within seconds. So the first start
+  there offers to fetch Microsoft's newer Direct3D 12 runtime (the D3D12 Agility
+  SDK, `D3D12Core.dll`, about 22 MB from nuget.org). It goes into a `D3D12`
+  folder beside `victory.exe`. `victory.exe get-d3d12` does the same by hand.
+  The file is checked against Microsoft's signature and the tested SHA-256.
+  Windows 11 keeps using its own runtime.
 - You need Windows 10 or 11, 32 GB of RAM or more, an SSD and an NVIDIA
   GeForce RTX card with a recent driver. This repository and its releases
   contain no game files.
+- **The first start of each new version restarts by itself once.** A new
+  `victory.exe` runs at about 14 fps on its first start, and normally from then
+  on. So the first start plays about 20 seconds, says so at the top of the
+  picture, and starts the game again. It doesn't happen again for that version
+  (a mark is kept in `%LOCALAPPDATA%\victory\warmed`).
+- RTX 20 and 30 cards can try DLSS frame generation with the
+  [MFG Unlocker](https://github.com/dashdogy/MFG-Unlocker) mod (not ours, and
+  not tested with this fork, which was only run on an RTX 50). It is an option,
+  off by default: **F1, MFG UNLOCKER, ON**, then restart. On, the next start
+  downloads it by itself from the mod's own GitHub release (v1.7.2, about 5 MB,
+  checked against the SHA-256 its author published) into
+  `%LOCALAPPDATA%\victory\mfg-unlocker`, and every start loads it. Nothing is
+  renamed or copied. On an RTX 20 or 30 the first start also asks once (No unless
+  you type y). `victory.exe get-mfg` downloads it by hand. The mod writes its own
+  `RTXMFG-...` logs and settings beside `victory.exe`, and Backspace opens its
+  menu. The start's notice says "UNLOCKED BY A MOD" and the log says it was
+  loaded. If the game crashes or frame generation fails, turn it off in F1 (or
+  add `VICTORY_MFG_UNLOCKER=` to `%LOCALAPPDATA%\victory\victory-settings.txt`).
+  FSR 3 frame generation (2x) is the supported way on those cards. A
+  `winmm.dll` copy of the mod beside `victory.exe` still works too.
 
 **In the game**
 
@@ -260,6 +325,7 @@ fork has always had; its options:
 | `-SeriesS` | the Series S profile: 1280x720 inside, faster, softer |
 | `-Res 1080to1440` / `4k` | scene at 1080p upscaled by the title / the stock 3840x2160 output |
 | `-NoFrameGenReady` | frame generation only with `-FrameGen` (it is otherwise made ready at every start, so the menu can switch it) |
+| `-FgType auto` / `dlss` / `fsr` | which frame generation (see the top of this page); FSR 3's DLLs from `VICTORY_FIDELITYFX_DIR`, else `amd-sdk\FidelityFX\bin` here |
 | `-Build diag` | the diagnostics build (slower; captures, timelines, recording time in the F3 panel) |
 | `-More @{VICTORY_X='1'}` | add or override any switch |
 
