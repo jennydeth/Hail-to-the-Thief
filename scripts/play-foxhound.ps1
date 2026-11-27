@@ -76,7 +76,7 @@ $settings = @{
     VICTORY_HEAP_SYNC_FIRST = '1'; VICTORY_SYNC_IN_PLACE = '1'; VICTORY_SPANS_QUICK = '1'; VICTORY_SYNC_FINE = '1'
     VICTORY_HEAP_SYNC_AT_SUBMIT = '1'
     # Light without the title's ray tracing: an estimate of indirect light and of reflections
-    VICTORY_AMBIENT = '1.5'; VICTORY_AMBIENT_AIR = '1.5'; VICTORY_AMBIENT_SPECULAR = '1'
+    VICTORY_AMBIENT = '1.1'; VICTORY_AMBIENT_AIR = '1.5'; VICTORY_AMBIENT_SPECULAR = '0.5,0.5'
     # Pixel programs keep the console's early depth test
     VICTORY_EARLY_DEPTH = '1'
     # Left out: the decal heap's defragmentation (5.6 ms of GPU a frame) and the heat-haze pass (smeared blocks)

@@ -3,15 +3,15 @@
 # second. Remove a line to go back to the launcher's value; delete lighting.txt to stop.
 #
 # AMBIENT: how strong the estimated indirect light is (shade, interiors). A number is a share of
-# the estimate (the launcher uses 1.5; 1 is all of it, more lightens the shade further); constant:<level> is a flat light instead;
+# the estimate (the launcher uses 1.1; 1 is all of it, more lightens the shade further); constant:<level> is a flat light instead;
 # off turns it off.
-AMBIENT=1.5
+AMBIENT=1.1
 # AMBIENT_AIR: the most the air (haze, fog in rooms) may scatter, as a multiple of the light
 # around it (the launcher uses 1.5; lower is clearer, higher is hazier).
 AMBIENT_AIR=1.5
 # AMBIENT_SPECULAR: reflections where the title's rays found nothing take this share of the
-# estimate (the launcher uses 1; 0 leaves the title's sky in them).
-AMBIENT_SPECULAR=1
+# estimate; <share>,<sky> keeps <sky> (0 to 1) of the title's sky in them (the launcher uses 0.5,0.5; 0 leaves the sky alone).
+AMBIENT_SPECULAR=0.5,0.5
 # AMBIENT_SHADE: <strength>,<radius in metres> of the shade in creases and corners (1,0.6 when not
 # given).
 AMBIENT_SHADE=1,0.6
