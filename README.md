@@ -41,6 +41,24 @@ Known problems:
   NaN tests of the stand-in for the indirect light; on hyphennn's tree the shade then went black
   for good after a few minutes in half the runs. Not measured on this tree yet.
 
+## Tried on this PC, no gain
+
+Each against the defaults above, 10-minute runs, Series S, DLSS Quality. Three runs of the
+defaults gave 18.6 to 19.3 fps mean (20.4 to 20.7 once settled): a difference smaller than that
+is noise.
+
+| Tried | Mean fps | Once settled | |
+|---|---|---|---|
+| `VICTORY_THIN_THREADS=4 VICTORY_UNDER_THREADS=3 VICTORY_VIEW_THREADS=3 VICTORY_PIPELINE_WORKERS=4` (a six-core set measured on another base) | 15.2 | 16.8 | worse |
+| `VICTORY_JOIN_PARTS=16 VICTORY_JOIN_LISTS=96` | 19.1 | 19.9 | no gain |
+| `VICTORY_SUBMIT_FRAMES=2` (a frame more in flight) | 19.9 | 20.4 | no gain |
+| `VICTORY_HEAP_RECHECK=0` | 19.6 | 20.1 | no gain |
+| The submitting thread on a core of its own (branch `lane-core`, `VICTORY_LANE_CORE=1`) | 19.3 | 20.6 | no gain |
+
+Where the frame goes (defaults, once settled, about 48 ms a frame): preparing 33.6 ms (of it
+copies of title memory 13.8 ms for 32 MB), copying back 15.6 ms (for about 1 MB), waiting for the
+card 1.7 ms. The processor, not the card, sets the frame rate on this PC.
+
 ## How to run it
 
 Windows 10/11 x64, 32 GB of RAM, an NVIDIA GeForce RTX card, Rust (pinned), the MSVC build tools,
