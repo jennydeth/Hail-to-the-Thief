@@ -9,7 +9,7 @@
     "boots": 1,
     "menu": 1,
     "world": 1,
-    "playable": 0.5,
+    "playable": 1,
     "story": 0.25,
     "render": 0.5,
     "fps": 17,
