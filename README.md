@@ -33,7 +33,7 @@ Known problems:
 - **No ray tracing** (the title's own is off): an estimate stands in for indirect light.
 - **The window glass in the first room looks frosted** in both runs on this tree; not checked
   against the console.
-- **DLSS frame generation needs an RTX 40 or 50**; on an RTX 30 card only DLSS upscaling is used.
+- **DLSS frame generation needs an RTX 40 or 50**; on an RTX 30 card `-FrameGen` uses AMD FSR 3 instead (see below).
 
 ## What is different here
 
@@ -73,12 +73,21 @@ git clone https://github.com/jennydeth/Hail-to-the-Thief
 cd Hail-to-the-Thief
 copy victory.example.toml victory.toml      # then set game_dir to your dump's folder, outside this one
 .\Get-NVIDIA-DLSS.cmd                        # once: NVIDIA's DLSS files (about 70 MB) from NVIDIA's GitHub
+.\Get-AMD-FSR.cmd                            # once: AMD's FSR 3 frame generation (about 30 MB) from AMD's GitHub
 cargo build --locked --release -p victory
-scripts\play-nvidia.ps1 -Exe <path of your copy's executable> -SeriesS
+scripts\play-nvidia.ps1 -Exe <path of your copy's executable> -SeriesS -FrameGen
 ```
 
 `-SeriesS` is what was measured above (with DLSS Quality, the script's default once NVIDIA's files
 are there). Without it the script runs the Series X profile at 2560x1440, heavier on the card.
+
+**Frame generation on an RTX 30 card.** `-FrameGen` shows a generated frame between each two the
+game renders. On a card without DLSS frame generation (RTX 20 and 30) it is AMD's FSR 3. RTX 3060,
+from a chapter-one save, 8 minutes: 14.4 frames a second rendered (16.1 without it), about 28 to
+32 shown, the interface not doubled, no crash. NVIDIA's own DLSS frame generation also runs on an
+RTX 3060 with the MFG Unlocker mod (F1, MFG UNLOCKER, then restart: someone else's mod, fetched from
+its author's release and checked): 13.7 rendered, about 26 to 30 shown. Input still answers at the
+rendered rate.
 The first run translates shaders as they are met: the first minutes in the world are slower.
 F1 in the game opens the settings menu, F3 the stats panel.
 
