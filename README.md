@@ -74,6 +74,15 @@ is noise.
 | `VICTORY_HEAP_RECHECK=0` | 19.6 | 20.1 | no gain |
 | The submitting thread on a core of its own (branch `lane-core`, `VICTORY_LANE_CORE=1`) | 19.3 | 20.6 | no gain |
 
+From the chapter-one save, 8-minute runs, FSR 3 frame generation on (rendered rates). The
+defaults gave 14.4 and 14.8 fps mean (14.7 and 15.1 once settled).
+
+| Tried | Mean fps | Once settled | |
+|---|---|---|---|
+| A build for Zen 3 (`RUSTFLAGS=-C target-cpu=znver3`, as RAZDA4A XEN builds) | 12.4 | 13.0 | no gain |
+| `VICTORY_TEXTURE_ROOM_PERCENT=70` (the launcher uses 80 with frame generation) | 13.0 | 13.0 | no gain |
+| `victory preload` (all 83,718 pipelines made ahead, 32 minutes once) | 14.8 | 15.1 | no change in a place already seen; it is for places not seen yet |
+
 Where the frame goes (defaults, once settled, about 48 ms a frame): preparing 33.6 ms (of it
 copies of title memory 13.8 ms for 32 MB), copying back 15.6 ms (for about 1 MB), waiting for the
 card 1.7 ms. The processor, not the card, sets the frame rate on this PC.
