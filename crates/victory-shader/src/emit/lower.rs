@@ -377,6 +377,8 @@ struct Lower<'a> {
     meeting: Option<V>,
     /// With `pairs`: the LDS accesses that need no meeting ([`LdsOrder`]).
     lds_unordered: HashSet<(usize, usize)>,
+    /// LDS atomics in loops that get no meeting ([`LdsOrder::looped`]).
+    lds_looped: HashSet<(usize, usize)>,
     /// With `pairs`: the console waves of the group, and the first of this console wave's
     /// exchange dwords ([`Self::exchange_dword`], made in the entry block).
     pair_waves: u32,
@@ -556,6 +558,57 @@ pub(super) fn branches_around(st: &Structured, needs: &[usize]) -> Option<Vec<us
         }
     }
     Some(out)
+}
+
+/// The per-lane branches (by block) that close a loop or leave one, whose wave-wide meaning
+/// is known ([`Structured::wave_any`]): the ones a host wave takes together
+/// ([`crate::structure::structure_wide_host`]) so that its lanes stay one wave behind the
+/// loop. Not the branches the wave takes together already, nor those on scalar conditions.
+pub(super) fn loop_branches(p: &Program, st: &Structured) -> HashSet<usize> {
+    let n = p.blocks.len();
+    let mut rpo = vec![usize::MAX; n];
+    for (i, b) in crate::ir::reverse_postorder(&p.blocks).into_iter().enumerate() {
+        rpo[b] = i;
+    }
+    let succ = |b: usize| -> Vec<usize> {
+        match p.blocks[b].exit {
+            Exit::Jump(t) => vec![t],
+            Exit::Branch { taken, not_taken } => vec![taken, not_taken],
+            _ => Vec::new(),
+        }
+    };
+    let mut out = HashSet::new();
+    for latch in (0..n).filter(|&b| rpo[b] != usize::MAX) {
+        for head in succ(latch).into_iter().filter(|&h| rpo[h] <= rpo[latch]) {
+            // the loop's blocks: the head, and what reaches the latch without passing it
+            let mut body = vec![false; n];
+            body[head] = true;
+            let mut stack = vec![latch];
+            while let Some(b) = stack.pop() {
+                if body[b] {
+                    continue;
+                }
+                body[b] = true;
+                stack.extend(p.blocks[b].preds.iter().copied().filter(|&q| rpo[q] != usize::MAX));
+            }
+            for b in (0..n).filter(|&b| body[b]) {
+                let LaneExit::Branch { when, taken, not_taken } = st.exits[b] else { continue };
+                let leaves = !body[taken] || !body[not_taken] || b == latch;
+                let per_lane = !st.wide.contains(&b)
+                    && !st.bools.support(when).iter().all(|a| matches!(a, Atom::Uniform(_)));
+                if leaves && per_lane && st.wave_any.get(b).copied().flatten().is_some() {
+                    out.insert(b);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether accesses outside a program's own shared memory are done as the console does them
+/// (reads give 0, writes are dropped; `VICTORY_LDS_BOUNDS=0`: taken as inside, as before).
+fn lds_bounds() -> bool {
+    !std::env::var("VICTORY_LDS_BOUNDS").is_ok_and(|v| v.trim() == "0")
 }
 
 /// Whether a refusal is of code that needs every lane of the wave where it stands (two host
@@ -993,6 +1046,28 @@ pub(super) struct LdsOrder {
     /// Of `unordered`, the reads near an LDS atomic: the two halves of a console wave may see
     /// different values there ([`lane_uniform`] does not take them as alike).
     pub(super) unstable: HashSet<(usize, usize)>,
+    /// LDS atomics in a loop that no plain LDS write or read leads into or stands in: they get
+    /// no meeting of the host waves ([`loop_atomics_on`]), with or without
+    /// [`with_pair_meetings`].
+    ///
+    /// A meeting is a group barrier, and the host waves take a loop each on its own
+    /// (`crate::structure::structure_wide_host`, or lane by lane): one that makes fewer rounds
+    /// stands at the barrier behind the loop while the others stand at the one inside it, the
+    /// host lets them all go on, and the first reads what the others have not written yet.
+    /// Seen in `CS_SortRayTiles` (the cloud pass, 256 threads, the game, build 1.0.2.1; captures
+    /// cloud3 and cloud4, RTX 4070 SUPER): its counting and its scattering loop take 15
+    /// entries a thread, the last threads none; the host waves of those read the bins' counts
+    /// while the others still counted, the places they worked out overlapped, and of the 1,068
+    /// tiles of the sorted class 971 were left (644: 605), the others written over or never
+    /// moved. A tile that is not in the list gets no ray: a square of clear sky in a cloud,
+    /// 8 by 4 of the clouds' pixels, until a later frame traces it (seen for a second or two
+    /// after a cut, when no earlier frame's cloud stands in).
+    ///
+    /// Without the meeting the atomic's order against the accesses around the loop is kept by
+    /// their own meetings and the title's barriers: what comes before the loop is asked for
+    /// here (nothing but atomics, back to a barrier), and what comes behind it meets first,
+    /// which every thread does only once its loop is done.
+    pub(super) looped: HashSet<(usize, usize)>,
 }
 
 /// [`LdsOrder`] of `p`: the program cut at its `s_barrier`s into pieces joined by the edges
@@ -1075,6 +1150,10 @@ pub(super) fn lds_order(p: &crate::ir::Program, st: &Structured) -> LdsOrder {
             .collect();
         let writes = near.iter().any(|a| a.2 == Kind::Write);
         let atomics = near.iter().any(|a| a.2 == Kind::Atomic);
+        // (on a cycle, and nothing but atomics in it and in what leads to it)
+        if fwd[k] && (0..pieces).filter(|&x| x == k || bwd[x]).flat_map(|x| accesses[x].iter()).all(|a| a.2 == Kind::Atomic) {
+            out.looped.extend(accesses[k].iter().map(|a| (a.0, a.1)));
+        }
         for &(b, i, kind) in &accesses[k] {
             let ordered = match kind {
                 Kind::Read | Kind::Atomic => writes,
@@ -1336,6 +1415,13 @@ fn linear_clamp_sampler(words: &[u32]) -> bool {
     };
     let s = super::sampler::StaticSampler::from_words([w0, w1, w2, w3]);
     s.filter & !1 == 0x14 && s.address == [3, 3, 3]
+}
+
+/// Whether LDS atomics in loops go without a meeting of the host waves ([`LdsOrder::looped`];
+/// `VICTORY_LDS_LOOP_ATOMICS=0`: they meet, as before 2026-11-27).
+fn loop_atomics_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_LDS_LOOP_ATOMICS").is_none_or(|v| v != "0"))
 }
 
 /// `VICTORY_WAVE_OWN_BITS=0`: a wave OR where not every lane runs is refused as before
@@ -1658,10 +1744,19 @@ impl<'a> Lower<'a> {
         let mut pairs: Option<u32> = None;
         let mut pair_waves = 0;
         // (and only around the LDS accesses whose order counts)
-        let lds_order = if PAIR_MEETINGS.get() { lds_order(p, x.st) } else { LdsOrder::default() };
+        let lds_order = {
+            let all = if PAIR_MEETINGS.get() || loop_atomics_on() { lds_order(p, x.st) } else { LdsOrder::default() };
+            let looped = if loop_atomics_on() { all.looped } else { HashSet::new() };
+            if PAIR_MEETINGS.get() {
+                LdsOrder { looped, unordered: all.unordered, unstable: all.unstable }
+            } else {
+                LdsOrder { looped, ..LdsOrder::default() }
+            }
+        };
         if let StageIo::Cs(cs) = x.native.io {
             s.threads = Some(cs.threads);
             s.lds_dwords = cs.lds_bytes() / 4;
+            s.title_lds_dwords = s.lds_dwords;
             // Code reading other lanes needs the console's wave size and
             // lane order; so do lane masks read as numbers, and LDS shared
             // within one wave, where the console compiler leaves out barriers.
@@ -1847,6 +1942,7 @@ impl<'a> Lower<'a> {
             s.prims = x.prims.clone();
             s.threads = Some([ms.threads, 1, 1]);
             s.lds_dwords = ms.lds_bytes.div_ceil(4);
+            s.title_lds_dwords = s.lds_dwords;
             s.mesh = Some(super::shader::Mesh {
                 max_vertices: ms.max_vertices,
                 max_primitives: ms.max_primitives,
@@ -1979,6 +2075,7 @@ impl<'a> Lower<'a> {
             pairs,
             meeting: None,
             lds_unordered: lds_order.unordered.clone(),
+            lds_looped: lds_order.looped.clone(),
             pair_waves,
             pair_base: None,
             flat: None,
@@ -5502,16 +5599,55 @@ impl<'a> Lower<'a> {
             return Err("LDS the program does not allocate");
         }
         let a = self.vgprs(inst, addr.as_ref().ok_or("an LDS address")?, 1)?[0];
-        // shortcut: LDS addresses are taken as dword-aligned and in bounds
-        // (out-of-bounds console accesses read 0 and drop writes).
-        let dword = |l: &mut Self, bytes: u32| -> V {
+        // shortcut: LDS addresses are taken as dword-aligned.
+        // Outside the program's shared memory the console reads 0 and drops writes; group-shared
+        // memory of the host is undefined there (and behind the program's dwords lie ours).
+        // So: the dword's place, and whether it is inside (`None`: not asked; the place is then
+        // taken as inside, as before 2026-11-27, `VICTORY_LDS_BOUNDS=0`). A place outside is
+        // given as the last dword inside: reads of it are replaced by 0, writes left out.
+        // Seen in `CS_SortRayTiles` (the cloud pass's sort of its ray tiles, 256 threads a group):
+        // a counting sort over 256 bins in LDS, the bin a thread clears and reads addressed by
+        // its number in the whole dispatch. Of the 32 groups dispatched only the first has
+        // entries of its own to sort; the 31 others clear and read at up to 32 KiB behind their
+        // 2.5 KiB.
+        // (The squares of clear sky that show in clouds for a second or two after a cut are not
+        // this: they were there with and without the bounds, captures cloud3 and cloud4 of
+        // 2026-11-27. The list those captures hold, 7,200 dwords, is two lists of 3,600 one
+        // behind the other, the tiles with cloud in them and those without; all 3,680 tiles of
+        // the frame were in it once each in cloud4.)
+        let limit = if lds_bounds() { self.s.title_lds_dwords } else { 0 };
+        let dword = |l: &mut Self, bytes: u32| -> (V, Option<V>) {
             let c = l.cur;
             let o = l.s.m.i32(bytes);
             let at = l.s.m.bin(c, Bin::Add, a, o);
             let two = l.s.m.i32(2);
             let index = l.s.m.bin(c, Bin::LShr, at, two);
             let lds = l.s.lds();
-            l.s.m.element(c, lds, index)
+            if limit == 0 {
+                return (l.s.m.element(c, lds, index), None);
+            }
+            let end = l.s.m.i32(limit);
+            let inside = l.s.m.cmp(c, pred::IULT, index, end);
+            let last = l.s.m.i32(limit - 1);
+            let index = l.s.m.select(c, inside, index, last);
+            (l.s.m.element(c, lds, index), Some(inside))
+        };
+        // (a guard and "inside" together; what a read gives outside)
+        let both = |l: &mut Self, guard: Option<V>, inside: Option<V>| -> Option<V> {
+            match (guard, inside) {
+                (Some(g), Some(i)) => Some(l.s.m.bin(l.cur, Bin::And, g, i)),
+                (g, None) => g,
+                (None, i) => i,
+            }
+        };
+        let read = |l: &mut Self, x: V, inside: Option<V>| -> V {
+            match inside {
+                Some(i) => {
+                    let zero = l.s.m.i32(0);
+                    l.s.m.select(l.cur, i, x, zero)
+                }
+                None => x,
+            }
         };
         let width = |n: &str| match n.rsplit('_').next() {
             Some("b64") => 2,
@@ -5545,7 +5681,7 @@ impl<'a> Lower<'a> {
                 || name.ends_with("_d16_hi")
         });
         if let Some(bits) = sub {
-            let p = dword(self, offset);
+            let (p, inside) = dword(self, offset);
             let o = self.s.m.i32(offset);
             let at = self.s.m.bin(c, Bin::Add, a, o);
             let three = self.s.m.i32(3);
@@ -5555,6 +5691,7 @@ impl<'a> Lower<'a> {
             if name.starts_with("ds_read") {
                 let reg = dst_reg.ok_or("an LDS read result")?;
                 let w = self.s.m.load(c, p);
+                let w = read(self, w, inside);
                 let x = self.s.m.bin(c, Bin::LShr, w, sh);
                 let x = if base.contains("_i") {
                     let k = self.s.m.i32(32 - bits);
@@ -5597,6 +5734,7 @@ impl<'a> Lower<'a> {
                 let ones = self.s.m.i32(u32::MAX);
                 let keep = self.s.m.bin(c, Bin::Xor, m, ones);
                 use super::bitcode::Rmw;
+                let guard = both(self, guard, inside);
                 let at = self.begin_guarded(guard);
                 self.s.m.atomic(self.cur, Rmw::And, p, keep);
                 self.s.m.atomic(self.cur, Rmw::Or, p, x);
@@ -5616,8 +5754,9 @@ impl<'a> Lower<'a> {
             let mut n = 0;
             for (off, w) in elements {
                 for k in 0..w {
-                    let p = dword(self, off + 4 * k);
+                    let (p, inside) = dword(self, off + 4 * k);
                     let x = self.s.m.load(self.cur, p);
+                    let x = read(self, x, inside);
                     self.write(inst, Reg::V(reg + n), x, guard);
                     n += 1;
                 }
@@ -5641,8 +5780,10 @@ impl<'a> Lower<'a> {
             }
             let at = self.begin_guarded(guard);
             for (off, x) in stores {
-                let p = dword(self, off);
+                let (p, inside) = dword(self, off);
+                let here = self.begin_guarded(inside);
                 self.s.m.store(self.cur, p, x);
+                self.end_guarded(here, &[]);
             }
             self.end_guarded(at, &[]);
             return Ok(());
@@ -5677,7 +5818,20 @@ impl<'a> Lower<'a> {
             Some((_, v)) => self.i32_of(v).unwrap_or(self.s.m.i32(0)),
             None => self.s.m.i32(0),
         };
-        let p = dword(self, offset);
+        let (p, inside) = dword(self, offset);
+        // (outside the memory nothing is done; a lane that runs gets 0 back, as a read does)
+        let outside = match inside {
+            Some(i) => {
+                let zero = self.s.m.i32(0);
+                let missed = match guard {
+                    Some(g) => self.s.m.select(self.cur, g, zero, outside),
+                    None => zero,
+                };
+                self.s.m.select(self.cur, i, outside, missed)
+            }
+            None => outside,
+        };
+        let guard = both(self, guard, inside);
         if let Some(max) = match op.as_str() {
             "max_f32" => Some(true),
             "min_f32" => Some(false),
@@ -5832,9 +5986,15 @@ impl<'a> Lower<'a> {
             && self.lds_meet.as_ref().is_none_or(|(all, _)| all[b])
             && !self.lds_unordered.contains(&(b, i))
         {
-            // the two host waves of a console wave meet before each LDS access: what the other
-            // half wrote is visible, and what it still reads is not overwritten
-            self.meet();
+            if self.lds_looped.contains(&(b, i)) {
+                // (in a loop the host waves take each on its own: a fence, no wait)
+                let (fence, void) = (self.s.m.i32(8), self.s.t.void);
+                self.s.op(self.cur, "barrier", Attr::NoDuplicate, void, 80, &[fence]);
+            } else {
+                // the two host waves of a console wave meet before each LDS access: what the
+                // other half wrote is visible, and what it still reads is not overwritten
+                self.meet();
+            }
         }
         // The structure builder's threads take turns through atomics (a tree
         // built from its leaves up): what one wrote before its atomic is

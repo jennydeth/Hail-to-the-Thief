@@ -38,6 +38,35 @@ fn check_cpu_features() -> Result<()> {
     check_cpu_features_with(has_avx2, skip.as_deref())
 }
 
+/// The executable a run was pointed at: the file itself, or, given a folder, the one
+/// executable in it (of several, the one whose name begins with `game`).
+fn title_executable(given: &Path) -> Result<std::path::PathBuf> {
+    if !given.is_dir() {
+        anyhow::ensure!(given.exists(), "{} does not exist: give the title's executable, or the folder it is in", given.display());
+        return Ok(given.to_path_buf());
+    }
+    let mut exes: Vec<std::path::PathBuf> = std::fs::read_dir(given)
+        .with_context(|| format!("listing {}", given.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("exe")))
+        .collect();
+    exes.sort();
+    let game = |p: &std::path::PathBuf| {
+        p.file_name().is_some_and(|n| n.to_string_lossy().to_ascii_lowercase().starts_with("game"))
+    };
+    if exes.len() > 1 && exes.iter().filter(|p| game(p)).count() == 1 {
+        exes.retain(game);
+    }
+    match exes.as_slice() {
+        [one] => Ok(one.clone()),
+        [] => anyhow::bail!(
+            "{} is a folder with no executable in it: give the title's executable, or the folder it is in",
+            given.display()
+        ),
+        _ => anyhow::bail!("{} is a folder with {} executables in it: give the title's own", given.display(), exes.len()),
+    }
+}
+
 #[cfg(windows)]
 pub fn run(
     exe: &Path,
@@ -78,6 +107,10 @@ pub fn run(
             upscaler.map(|m| format!(", scene at the {} scale ({})", m.name(), m.scale())).unwrap_or_default()
         );
     }
+    // A folder in place of the executable: the title's executable in it (reading a folder
+    // as a file fails with "Access is denied", which says nothing of the mistake).
+    let found = title_executable(exe)?;
+    let exe = found.as_path();
     let original = std::fs::read(exe).with_context(|| format!("reading {}", exe.display()))?;
     let mut prepared = victory_loader::prepare(&original)?;
     let hash = prepared.original_hash.to_hex();

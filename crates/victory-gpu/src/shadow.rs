@@ -425,6 +425,7 @@ fn card_room_for(size: u64) -> Option<ID3D12Resource> {
     if !host.card_ready() {
         return None;
     }
+    crate::ahead::want_card();
     // Only while the card has room: with this copy on it, a fifth of the
     // budget the system gives us must still be free. Copies are made when
     // the world loads, before the textures fill the card; the texture
@@ -463,7 +464,9 @@ fn card_room_for(size: u64) -> Option<ID3D12Resource> {
         CARD_BYTES[0].fetch_sub(size, Ordering::Relaxed);
         return None;
     }
-    let buffer = host.uav_buffer(size);
+    // (one made ahead, if it is of that size and one is in store: `crate::ahead`)
+    let ahead = if size == crate::ahead::SIZE { crate::ahead::card() } else { None };
+    let buffer = ahead.or_else(|| host.uav_buffer(size));
     if buffer.is_none() {
         CARD_BYTES[0].fetch_sub(size, Ordering::Relaxed);
     }
@@ -1545,9 +1548,20 @@ fn spin(there: impl Fn() -> bool) {
     }
 }
 
-/// How many threads are kept for [`wide`].
+/// How many threads are kept for [`wide`]: three eighths of the logical processors, 2 to 8
+/// (`VICTORY_WIDE_THREADS=<n>`, 1 to 32, in its place). A quarter of them, 2 to 6, until
+/// 2026-11-27: on 16 logical processors 4 threads; with 8, the opening's cutscenes had 13
+/// seconds of 256 at 40 ms a frame or more in place of 28, and the stretch in which a scene
+/// streams in 38.9 ms a frame in place of 41.6 (runs v5q, v6q; gameplay not measured, the
+/// title's own threads want processors there, hence 6 of 16).
 fn wide_threads() -> usize {
-    std::thread::available_parallelism().map_or(4, |n| n.get() / 4).clamp(2, 6)
+    static ASKED: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    let asked = *ASKED.get_or_init(|| {
+        let n = std::env::var("VICTORY_WIDE_THREADS").ok()?.trim().parse::<usize>().ok()?.clamp(1, 32);
+        tracing::info!(n, "threads kept for refreshes on several threads (VICTORY_WIDE_THREADS)");
+        Some(n)
+    });
+    asked.unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get() * 3 / 8).clamp(2, 8))
 }
 
 fn workers() -> &'static Workers {

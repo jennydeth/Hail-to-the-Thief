@@ -135,6 +135,13 @@ if (-not (Test-Path $victory)) {
     if (-not (Test-Path $victory)) { Write-Host "The build did not make $victory."; return }
 }
 if (-not (Test-Path -LiteralPath $Exe)) { Write-Host "No $Exe."; return }
+# A folder in place of the executable: the one .exe in it (of several, the one whose name begins with 'game').
+if (Test-Path -LiteralPath $Exe -PathType Container) {
+    $found = @(Get-ChildItem -LiteralPath $Exe -Filter *.exe -File)
+    if ($found.Count -gt 1) { $found = @($found | Where-Object Name -like 'game*') }
+    if ($found.Count -ne 1) { Write-Host "$Exe is a folder without one clear executable: give the title's .exe."; return }
+    $Exe = $found[0].FullName
+}
 # Switches left over in this window are cleared; path settings stay (victory.toml gives them otherwise).
 $paths = 'VICTORY_CONFIG', 'VICTORY_GAME_DIR', 'VICTORY_CACHE_DIR', 'VICTORY_DATA_DIR', 'VICTORY_STREAMLINE_DIR'
 Get-ChildItem Env:VICTORY_* -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin $paths } | ForEach-Object { Remove-Item "Env:$($_.Name)" }
