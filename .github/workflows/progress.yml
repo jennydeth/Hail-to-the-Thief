@@ -1,0 +1,29 @@
+# Keeps progress.json's "updated" date at the day of the latest push to main, so the tracker
+# that reads it sees when the repository last changed. The figures in it (fps, story, ...) are
+# measurements and are changed by hand in the commit that measures them.
+name: progress.json date
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  stamp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stamp the date of this push
+        run: |
+          today=$(date -u +%Y-%m-%d)
+          sed -i -E "s/(\"updated\": *\")[0-9-]+(\")/\1${today}\2/" progress.json
+          if git diff --quiet -- progress.json; then
+            echo "already ${today}"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "progress.json: updated ${today}" -- progress.json
+          git push
