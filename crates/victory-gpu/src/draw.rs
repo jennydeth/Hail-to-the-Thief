@@ -3773,6 +3773,8 @@ impl State {
         DISPATCHED.fetch_add(1, Ordering::Relaxed);
         if let Some(role) = p.stages.first().and_then(|s| s.shader.ambient)
             && crate::ambient::on()
+            // A resolve of no groups writes nothing: a hold would rewrite what the image held before.
+            && !(role == crate::ambient::Role::Reflect && (x == 0 || y == 0 || z == 0))
             && self.ambient(list, p, role)
         {
             self.host_pipeline = 0;
@@ -3783,7 +3785,9 @@ impl State {
     /// The stand-in for the indirect light after a dispatch of `p`
     /// (`crate::ambient`). Whether it recorded anything.
     fn ambient(&self, list: &HostList, p: &HostPipeline, role: crate::ambient::Role) -> bool {
-        use crate::ambient::{AIR, ALPHA, DEPTH, LIGHT, MISS_DEPTH, MISS_LIGHT, MissNote, RADIANCE, Role, Views};
+        use crate::ambient::{
+            AIR, ALPHA, DEPTH, LIGHT, MISS_DEPTH, MISS_LIGHT, MissNote, RADIANCE, REFLECTIONS, Role, Views,
+        };
         // Each part has a switch of its own, on unless 0, that `VICTORY_AB` can flip while the
         // title runs (diagnostics builds): one scene with and without it. The light the
         // surfaces send out is kept either way.
@@ -3792,6 +3796,7 @@ impl State {
             Role::Miss => crate::toggled!("VICTORY_AMBIENT_SPECULAR_ON"),
             Role::Air => crate::toggled!("VICTORY_AMBIENT_AIR_ON"),
             Role::Alpha => crate::toggled!("VICTORY_AMBIENT_ALPHA_ON"),
+            Role::Reflect => crate::toggled!("VICTORY_AMBIENT_REFLECT_ON"),
             Role::Radiance => true,
         };
         if !live {
@@ -3865,6 +3870,7 @@ impl State {
             Role::Air => AIR,
             Role::Alpha => ALPHA,
             Role::Miss => MISS_LIGHT,
+            Role::Reflect => REFLECTIONS[0],
         };
         // Variants of the miss program bind the rays' image and the depth at
         // other places of their tables than the one found first (run
@@ -3925,6 +3931,15 @@ impl State {
                     d.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && d.Format.0 == 26
                 })
             }),
+            // The first of the places that holds a 2D image of the format
+            // (R32_UINT holding R9G9B9E5), else the first such in the tables.
+            Role::Reflect => {
+                let fits = |d: &D3D12_RESOURCE_DESC| d.Format.0 == 42 && d.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                REFLECTIONS
+                    .iter()
+                    .find_map(|&at| entry(ResourceType::Uav, at).filter(|(d, _)| fits(d)))
+                    .or_else(|| scan(ResourceType::Uav, &fits))
+            }
             _ => entry(ResourceType::Uav, at),
         };
         let usual_depth = |at: (u8, u32)| {
@@ -4022,7 +4037,7 @@ impl State {
                 }
                 plain
             }),
-            Role::Radiance | Role::Air | Role::Alpha => image,
+            Role::Radiance | Role::Air | Role::Alpha | Role::Reflect => image,
         };
         let (Some((of, image)), Some((seen, depth))) = (image, depth) else {
             once!(?role, "no stand-in for the indirect light: other tables");
@@ -4063,7 +4078,7 @@ impl State {
             return false;
         };
         // (R32_UINT holding R9G9B9E5; R11G11B10_FLOAT.)
-        let format = if role == Role::Resolve { 42 } else { 26 };
+        let format = if matches!(role, Role::Resolve | Role::Reflect) { 42 } else { 26 };
         let volume = of.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D;
         // The miss program's image is of half the picture's size, its depth
         // (32-bit) of the whole.
@@ -5434,8 +5449,13 @@ impl State {
         // the run before: the tables noted are another program's.)
         if kind == DISPATCH
             && !joined
-            && let Some(role @ (crate::ambient::Role::Miss | crate::ambient::Role::Alpha)) =
-                p.stages.first().and_then(|s| s.shader.ambient)
+            && let Some(
+                role @ (crate::ambient::Role::Miss | crate::ambient::Role::Alpha | crate::ambient::Role::Reflect),
+            ) = p.stages.first().and_then(|s| s.shader.ambient)
+            // The reflections' resolve not after a count buffer: a count of 0
+            // runs no resolve, and the hold would rewrite the image's earlier
+            // contents (Vice-Tay fa90adf).
+            && (role != crate::ambient::Role::Reflect || counter.is_none())
             && crate::ambient::on()
         {
             unsettle_indirect(list);
