@@ -44,10 +44,6 @@ Known problems:
 - **The water's own light** is left out on 32-lane cards here (a fix exists in hyphennn's tree).
 - **DLSS frame generation needs an RTX 40 or 50**; on RTX 20 and 30 cards it is AMD's FSR 3
   (NVIDIA's also runs on an RTX 3060 with the MFG Unlocker mod; see below).
-- **The indirect clamp's work budget is not charged on NVIDIA or WARP**: two tests of it
-  (`host_list_budget_starts_empty_at_each_submission`, `warp_batch_charges_every_execution`)
-  fail the same way in VIctory-NVIDIA's tree, and are ignored here (`cargo test -- --ignored` runs
-  them). The budget only bounds runaway indirect work; play is not affected that we have seen.
 
 ## What is different here
 

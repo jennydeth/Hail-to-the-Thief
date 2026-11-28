@@ -2664,7 +2664,6 @@ void main(uint3 g : SV_GroupID, uint i : SV_GroupIndex) {
     /// clamps spend all of it is followed, after the reset, by one whose
     /// small record still runs.
     #[test]
-    #[ignore = "fails on NVIDIA and WARP (the budget is not charged) since VIctory-NVIDIA d12eb1b2, as written on AMD; README, known problems"]
     fn host_list_budget_starts_empty_at_each_submission() {
         let Some(host) = super::host() else {
             return;
@@ -3157,7 +3156,6 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_DispatchThreadID) {
     /// Records past the list's budget come out empty, and one read by many
     /// executions is charged for each.
     #[test]
-    #[ignore = "fails on NVIDIA and WARP (the budget is not charged) since VIctory-NVIDIA d12eb1b2, as written on AMD; README, known problems"]
     fn warp_batch_charges_every_execution() {
         let Some(mut warp) = WarpHarness::new() else {
             return;
