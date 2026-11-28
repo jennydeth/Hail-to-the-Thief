@@ -83,6 +83,25 @@ defaults gave 14.4 and 14.8 fps mean (14.7 and 15.1 once settled).
 | `VICTORY_TEXTURE_ROOM_PERCENT=70` (the launcher uses 80 with frame generation) | 13.0 | 13.0 | no gain |
 | `victory preload` (all 83,718 pipelines made ahead, 32 minutes once) | 14.8 | 15.1 | no change in a place already seen; it is for places not seen yet |
 
+Measured on 28 November, against controls the same night: 13.16, 12.91 and 12.93 fps mean (13.80,
+13.02 and 13.21 once settled).
+
+| Tried | Mean fps | Once settled | |
+|---|---|---|---|
+| mimalloc as the allocator (from [ProjectLeonida/mandy](https://github.com/ProjectLeonida/mandy)'s runtime; branch `mimalloc`) | 11.09 | 14.47 | no gain (a cold start) |
+| [tiadiff/VIctory-NVIDIA-LowStutter](https://github.com/tiadiff/VIctory-NVIDIA-LowStutter)'s four CPU changes: a slot bitset, packed heap ranges, fewer pipeline waits, no scratch allocations (branch `lowstutter-cpu`) | 12.79, 12.62 | 13.00, 13.09 | no gain |
+| Copy constants snapshotted on the card, `VICTORY_PLACED_ORDER` on ([whiteh4cker-tr/VIctory_sm86](https://github.com/whiteh4cker-tr/VIctory_sm86) `be29e9c`; branch `placed-constants`) | 12.79 | 12.93 | no gain |
+| `VICTORY_HELPER_PRIORITY=1` (helpers at the submitting thread's priority, as scarlet-fps sets it) | 12.58 | 13.06 | no gain |
+| [clankenjoyer/scarlet-fps](https://github.com/clankenjoyer/scarlet-fps)'s settings that this tree knows (18, among them `VICTORY_ASYNC_SUBMIT`, `VICTORY_COPY_BESIDE`, `VICTORY_WIDE_MERGE`) | 13.19, 13.40 | 13.38, 13.92 | no gain; preparing a frame took 32.5 to 34 ms instead of 38 to 40 |
+| Frame generation off (the same night) | 13.54, 12.97 | 13.60, 13.46 | it does not cost rendered frames here |
+| Other runtimes, from the same save: scarlet-fps itself (warm) | 13.57, 14.83 | 14.75, 15.46 | faster, but faces come out black |
+| HUMAN without ray tracing ([HumanlyDev/HUMAN](https://github.com/HumanlyDev/HUMAN)) | 2.6 | 2.7 | |
+| mandy's `leonida.exe`, cold and warm | 4.2, 11.03 | 8.3, 13.65 | the same as this tree once warm |
+
+Whatever the layer's part shrank to, a frame stayed at 66 to 76 ms: when preparing or waiting for
+the card took less, the frame waited for the title's own threads instead. On this processor the
+title's own code now sets the rendered rate.
+
 Where the frame goes (defaults, once settled, about 48 ms a frame): preparing 33.6 ms (of it
 copies of title memory 13.8 ms for 32 MB), copying back 15.6 ms (for about 1 MB), waiting for the
 card 1.7 ms. The processor, not the card, sets the frame rate on this PC.
