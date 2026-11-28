@@ -59,6 +59,12 @@ Known problems:
   order so the driver finds saved pipelines again, the cloud tile sort and violet light estimate
   fixes, a buffer pool, a VRAM limit, and a folder accepted for `-Exe`. Same frame rate here as
   without it (19.7 and 18.6 fps mean, 20.1 and 20.6 once settled, a cold and a warm run).
+- **VIctory-NVIDIA up to `63b902fe`** (28 November): its crash fixes, the frame-time spread in the
+  log, and skornuta's memory stack on in the launcher (`VICTORY_SLOT_EVICT`,
+  `VICTORY_ALLOCATOR_TRIM`, `VICTORY_BUDGET_PACK`). From the chapter-one save: 14.73, 14.57 and
+  14.67 fps once settled against 15.19, 13.06, 14.42 and 13.74 before it, the longest second 79 to
+  83 ms against 85 to 94. Without the memory stack the merged tree was slower (12.81 on average
+  over four runs), so keep it on.
 
 ## Tried on this PC, no gain
 
@@ -94,6 +100,8 @@ Measured on 28 November, against controls the same night: 13.16, 12.91 and 12.93
 | `VICTORY_HELPER_PRIORITY=1` (helpers at the submitting thread's priority, as scarlet-fps sets it) | 12.58 | 13.06 | no gain |
 | [clankenjoyer/scarlet-fps](https://github.com/clankenjoyer/scarlet-fps)'s settings that this tree knows (18, among them `VICTORY_ASYNC_SUBMIT`, `VICTORY_COPY_BESIDE`, `VICTORY_WIDE_MERGE`) | 13.19, 13.40 | 13.38, 13.92 | no gain; preparing a frame took 32.5 to 34 ms instead of 38 to 40 |
 | Frame generation off (the same night) | 13.54, 12.97 | 13.60, 13.46 | it does not cost rendered frames here |
+| `VICTORY_WINDOWS_BAR_MB=1024 VICTORY_CARD_BUFFERS_MB=1536` (Resizable BAR is on here; [Keel62155/VIctoryUnified](https://github.com/Keel62155/VIctoryUnified) measured 20 % on a card-bound PC) | 12.98, 12.82 | 12.99, 12.83 | no gain; the longest second 109 to 112 ms |
+| `VICTORY_PIPELINE_WAIT_MS=80` (500 by default; [CHECK6960/Victory-Nvidia-optimized](https://github.com/CHECK6960/Victory-Nvidia-optimized)) | 12.72 | 12.78 | no change standing in one place; it is for the stalls when pipelines are still being made |
 | Other runtimes, from the same save: scarlet-fps itself (warm) | 13.57, 14.83 | 14.75, 15.46 | faster, but faces come out black |
 | HUMAN without ray tracing ([HumanlyDev/HUMAN](https://github.com/HumanlyDev/HUMAN)) | 2.6 | 2.7 | |
 | mandy's `leonida.exe`, cold and warm | 4.2, 11.03 | 8.3, 13.65 | the same as this tree once warm |
