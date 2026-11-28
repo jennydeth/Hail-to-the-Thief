@@ -3163,10 +3163,7 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_DispatchThreadID) {
         let Some(mut warp) = WarpHarness::new() else {
             return;
         };
-        // A record that does not fit takes the rest (`VICTORY_INDIRECT_REST=1`,
-        // off by default since 545f890): the budget this test charges.
-        let source = batch::SOURCE.replace("REST ?", "true ?");
-        let pass = make_from(&warp.device, &source).expect("the batched clamp must compile on WARP");
+        let pass = make_from(&warp.device, batch::SOURCE).expect("the batched clamp must compile on WARP");
         const BUDGET: u32 = 1 << 27;
         // 2^26 vertices each, as much as a draw is let run: two fill it.
         for (times, records, filled) in [(1u32, 3u64, 2usize), (2, 1, 1), (1, 1, 1), (3, 1, 0)] {

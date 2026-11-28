@@ -195,7 +195,6 @@ struct Cli {
 // Parsed once at start: the size of its largest variant does not matter.
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
-#[allow(clippy::large_enum_variant)] // parsed once per start
 enum Command {
     /// Summarise one PE image: headers, sections, imports, TLS, build id.
     Inspect {
