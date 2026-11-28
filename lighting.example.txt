@@ -15,3 +15,6 @@ AMBIENT_SPECULAR=0.5,0.5
 # AMBIENT_SHADE: <strength>,<radius in metres> of the shade in creases and corners (1,0.6 when not
 # given).
 AMBIENT_SHADE=1,0.6
+# AMBIENT_OCCLUSION: horizon (the default) shades contact and corners from the surfaces around and
+# takes the light from the open side; creases is the earlier, lighter shade.
+AMBIENT_OCCLUSION=horizon

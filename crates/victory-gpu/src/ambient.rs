@@ -21,14 +21,16 @@
 //!
 //! What it assumes: what is not on screen sends out what is (with a slow
 //! mean of the last seconds, so that turning into a dark corner is not black
-//! at once). No occlusion but the creases'.
+//! at once). No occlusion but the creases' (or the horizons', see below).
 //!
 //! `VICTORY_AMBIENT`:
 //! - unset or `0`/`off`: the title's own output.
 //! - a number: that share of the estimate (1: all of it).
 //! - `constant:<level>`: the constant, as beloooo's fork has it.
 //!
-//! `VICTORY_AMBIENT_SHADE=<strength>,<radius in metres>` sets the creases.
+//! `VICTORY_AMBIENT_SHADE=<strength>,<radius in metres>` sets the shade of
+//! creases and corners: ground-truth ambient occlusion, or with
+//! `VICTORY_AMBIENT_OCCLUSION=creases` the earlier openness ([`horizon`]).
 //! `VICTORY_AMBIENT_ONCE=1`: one bounce of the title's own light, without the
 //! stand-in's light coming back to it ([`once`]).
 //!
@@ -130,7 +132,8 @@ fn parse(set: &str) -> Set {
 /// `VICTORY_AMBIENT_FILE=<file>`: the stand-in's settings read from a file
 /// again twice a second, to tune them by eye in a running game. Each line is
 /// `NAME=value` for `VICTORY_AMBIENT`, `VICTORY_AMBIENT_AIR`,
-/// `VICTORY_AMBIENT_SPECULAR` or `VICTORY_AMBIENT_SHADE` (the `VICTORY_` may
+/// `VICTORY_AMBIENT_SPECULAR`, `VICTORY_AMBIENT_SHADE` or
+/// `VICTORY_AMBIENT_OCCLUSION` (the `VICTORY_` may
 /// be left out); a line without `=` first in the file is `VICTORY_AMBIENT`.
 /// What the file does not name keeps the environment's value. The idea is
 /// Belobug's (VIctory-Belobug-AMD), first written for `VICTORY_AMBIENT`
@@ -276,8 +279,23 @@ fn shade() -> [f32; 2] {
     *SET.get_or_init(|| parse_shade(&std::env::var("VICTORY_AMBIENT_SHADE").unwrap_or_default()))
 }
 
+/// `VICTORY_AMBIENT_OCCLUSION`: `horizon` (the default) hides the light the
+/// stand-in puts in, and the title's own, by the surfaces around as
+/// ground-truth ambient occlusion has it, and takes it from the direction
+/// that is open; `creases` is the openness of beloooo's cd9f78ce. Measured
+/// on an RTX 3060 at 1280x720, flipped live every 20 s in one run: 15.00 fps
+/// with `horizon`, 14.98 with `creases`.
+fn horizon() -> bool {
+    let parse_occlusion = |set: &str| !set.trim().eq_ignore_ascii_case("creases");
+    if let Some(v) = live_value("VICTORY_AMBIENT_OCCLUSION") {
+        return parse_occlusion(&v);
+    }
+    static SET: OnceLock<bool> = OnceLock::new();
+    *SET.get_or_init(|| parse_occlusion(&std::env::var("VICTORY_AMBIENT_OCCLUSION").unwrap_or_default()))
+}
+
 const SOURCE: &str = r#"
-#define RS "RootConstants(num32BitConstants=12, b0), DescriptorTable(SRV(t0)), DescriptorTable(UAV(u0)), UAV(u1), UAV(u2)"
+#define RS "RootConstants(num32BitConstants=13, b0), DescriptorTable(SRV(t0)), DescriptorTable(UAV(u0)), UAV(u1), UAV(u2)"
 #define CX 64
 #define CY 36
 #define CELLS (CX * CY)
@@ -287,6 +305,7 @@ cbuffer Set : register(b0) {
     float level; float constant; float strength; float radius;
     float near; float tan_y; uint width; uint height;
     float follow; float most; float air; float once;
+    float horizon;
 };
 Texture2D<float> depth : register(t0);
 // Cells: the light they send out (then, at CELLS, the slow mean), from
@@ -472,6 +491,56 @@ uint pack(float3 c) {
     uint3 m = min(uint3(c * scale + 0.5), 511u);
     return m.r | (m.g << 9) | (m.b << 18) | (uint(e) << 27);
 }
+// Ground-truth ambient occlusion (Jimenez et al. 2016, "Practical
+// Real-Time Strategies for Accurate Indirect Occlusion"): in each of a few
+// slices of the view around the point, the highest surface either way within
+// `radius` bounds the arc of sky it sees; the cosine-weighted share of the
+// arcs is the light that reaches it, their middle the direction it comes from.
+float occlusion(int2 p, float3 c, float3 n, float px, float noise, float2 size, out float3 bent) {
+    const int SLICES = 3;
+    const int STEPS = 6;
+    float3 v = normalize(-c);
+    float seen_all = 0.0;
+    float3 toward = 0.0;
+    for (int s = 0; s < SLICES; s++) {
+        float phi = (s + noise) * 3.14159265 / SLICES;
+        float2 o = float2(cos(phi), sin(phi));
+        // Down the screen is down in the view.
+        float3 dir = float3(o.x, -o.y, 0.0);
+        float3 ortho = dir - dot(dir, v) * v;
+        float3 axis = normalize(cross(ortho, v));
+        float3 pn = n - axis * dot(n, axis);
+        float pl = length(pn);
+        if (pl < 1e-4) continue;
+        float cn = saturate(dot(pn, v) / pl);
+        float na = (dot(ortho, pn) < 0.0 ? -1.0 : 1.0) * acos(cn);
+        float low0 = cos(na + 1.5707963), low1 = cos(na - 1.5707963);
+        float hc0 = low0, hc1 = low1;
+        for (int i = 0; i < STEPS; i++) {
+            float t = (i + frac(noise * 7.0 + s * 0.618034)) / STEPS;
+            float2 step = o * max(t * t * px, 1.0 + i);
+            float3 d0 = seen(p + int2(round(step)), size) - c;
+            float3 d1 = seen(p - int2(round(step)), size) - c;
+            float l0 = length(d0), l1 = length(d1);
+            float f0 = saturate(1.0 - l0 * l0 / (radius * radius));
+            float f1 = saturate(1.0 - l1 * l1 / (radius * radius));
+            hc0 = max(hc0, lerp(low0, dot(d0, v) / max(l0, 1e-6), f0));
+            hc1 = max(hc1, lerp(low1, dot(d1, v) / max(l1, 1e-6), f1));
+        }
+        float h0 = -acos(clamp(hc1, -1.0, 1.0));
+        float h1 = acos(clamp(hc0, -1.0, 1.0));
+        h0 = na + max(h0 - na, -1.5707963);
+        h1 = na + min(h1 - na, 1.5707963);
+        float arc = pl * 0.25 * (2.0 * cn + 2.0 * (h0 + h1) * sin(na) - cos(2.0 * h0 - na) - cos(2.0 * h1 - na));
+        seen_all += arc;
+        float mid = 0.5 * (h0 + h1);
+        toward += max(arc, 0.0) * (cos(mid) * v + sin(mid) * normalize(ortho));
+    }
+    bent = dot(toward, toward) > 1e-8 ? normalize(toward) : n;
+    // Never past the surface's own side.
+    bent = normalize(lerp(n, bent, saturate(dot(bent, n) * 2.0)));
+    return seen_all / SLICES;
+}
 [RootSignature(RS)]
 [numthreads(8, 8, 1)]
 void raise(uint3 at : SV_DispatchThreadID) {
@@ -485,11 +554,16 @@ void raise(uint3 at : SV_DispatchThreadID) {
     float3 dy = abs(u.z - c.z) < abs(d.z - c.z) ? c - u : d - c;
     float3 n = normalize(cross(dy, dx) + float3(0, 0, -1e-9));
     if (dot(n, c) > 0.0) n = -n;
-    // How open it is (as in beloooo's cd9f78ce).
+    // How open it is (as in beloooo's cd9f78ce), or with `horizon` the share
+    // of the light from above it that no nearer surface hides, and the
+    // direction that light comes from on the whole.
     float open = 1.0;
+    float3 bent = n;
     float px = min(radius * size.y / (2.0 * tan_y * c.z), 128.0);
     float noise = frac(52.9829189 * frac(dot(float2(p), float2(0.06711056, 0.00583715))));
-    if (strength > 0.0 && px >= 1.5 && c.z < 400.0) {
+    if (horizon > 0.0 && strength > 0.0 && px >= 1.5 && c.z < 400.0) {
+        open = pow(saturate(occlusion(p, c, n, px, noise, size, bent)), strength);
+    } else if (strength > 0.0 && px >= 1.5 && c.z < 400.0) {
         float sum = 0.0;
         const int N = 12;
         for (int i = 0; i < N; i++) {
@@ -527,7 +601,7 @@ void raise(uint3 at : SV_DispatchThreadID) {
         sum += w;
     }
     float3 all = float3(sr.w, sg.w, sb.w) / sum;
-    found = all + 1.2 * float3(dot(sr.xyz, n), dot(sg.xyz, n), dot(sb.xyz, n)) / sum;
+    found = all + 1.2 * float3(dot(sr.xyz, bent), dot(sg.xyz, bent), dot(sb.xyz, bent)) / sum;
     found = clamp(found, 0.2 * all, 2.5 * all);
     found = lerp(found, cells[CELLS].rgb, 0.2) * level * open;
     float3 was = unpack(light[p]);
@@ -545,6 +619,8 @@ void raise(uint3 at : SV_DispatchThreadID) {
     float top = max(dot(found, LUMA) * most, 1e-6);
     float has = dot(was, LUMA);
     was *= min(1.0, top / max(has, 1e-6));
+    // The title's rays found nothing, so nothing hid its light.
+    if (horizon > 0.0) was *= open;
     float3 now = max(was, found);
     light[p] = pack(now);
     if (once > 0.0) {
@@ -785,7 +861,7 @@ pub(crate) fn after(list: &HostList, role: Role, views: &Views) -> bool {
     list.keep(&pass.points);
     let [strength, radius] = shade();
     let floats = [level, constant, strength, radius, 0.1, 0.45];
-    let mut words = [0u32; 12];
+    let mut words = [0u32; 13];
     for (to, v) in words.iter_mut().zip(floats) {
         *to = v.to_bits();
     }
@@ -795,6 +871,7 @@ pub(crate) fn after(list: &HostList, role: Role, views: &Views) -> bool {
     words[9] = 4.0f32.to_bits();
     words[10] = air().to_bits();
     words[11] = if once() { 1.0f32 } else { 0.0 }.to_bits();
+    words[12] = if horizon() { 1.0f32 } else { 0.0 }.to_bits();
     let l = &list.list;
     // SAFETY: an open list with the heap of the views set; the title's
     // program has just used both views, so their textures are in the states
@@ -802,7 +879,7 @@ pub(crate) fn after(list: &HostList, role: Role, views: &Views) -> bool {
     unsafe {
         uav_barrier(l);
         l.SetComputeRootSignature(&pass.root);
-        l.SetComputeRoot32BitConstants(0, 12, words.as_ptr().cast(), 0);
+        l.SetComputeRoot32BitConstants(0, 13, words.as_ptr().cast(), 0);
         l.SetComputeRootDescriptorTable(1, views.depth);
         l.SetComputeRootDescriptorTable(2, views.image);
         l.SetComputeRootUnorderedAccessView(3, pass.cells.GetGPUVirtualAddress());

@@ -52,6 +52,11 @@ Known problems:
 - **The light estimate tuned for this card and live**: 1.1 for the light and 0.5,0.5 for
   reflections (1.5 and full reflections looked too bright and off in play, 0.8 too dark), read
   again from `lighting.txt` twice a second while the game runs.
+- **Contact shadows and corners from ground-truth ambient occlusion** (horizon search, 3 slices of
+  6 steps a side, light taken from the open side) in place of the earlier 12-sample crease shade:
+  people, beds and furniture sit in their shade. No cost measured on the RTX 3060: 15.00 fps
+  against 14.98, the two flipped live every 20 s in one run. `AMBIENT_OCCLUSION=creases` in
+  `lighting.txt` brings back the earlier look.
 - **Our own shaders are compiled with IEEE strictness.** Without it the compiler may fold away the
   NaN tests of the light estimate; on hyphennn's tree the shade then went black for good after a
   few minutes in half the runs.
