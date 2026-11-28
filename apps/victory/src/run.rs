@@ -40,6 +40,41 @@ fn check_cpu_features() -> Result<()> {
 
 /// The executable a run was pointed at: the file itself, or, given a folder, the one
 /// executable in it (of several, the one whose name begins with `game`).
+/// What to tell when the executable is not the retail build that the 1440p
+/// and DLSS patches know: often it is that build, changed in place by
+/// another tool (an FPS unlock changed 6 bytes and kept the stock file as
+/// `.exe.bak`: issue #6 of the public repository). A file beside it whose
+/// name begins as the executable's, of the same size, that hashes to the
+/// retail build is named.
+fn changed_copy(exe: &Path) -> String {
+    let len = std::fs::metadata(exe).map_or(0, |m| m.len());
+    let stem = exe.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_ascii_lowercase();
+    let stock = exe
+        .parent()
+        .and_then(|dir| std::fs::read_dir(dir).ok())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|p| {
+            p.as_path() != exe
+                && p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.to_ascii_lowercase().starts_with(&stem))
+                && std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() == len)
+        })
+        .find(|p| std::fs::read(p).is_ok_and(|bytes| blake3::hash(&bytes).to_hex().as_str() == native_1440p::RETAIL_BUILD));
+    match stock {
+        Some(stock) => format!(
+            "{} is not the unchanged retail executable: it was changed in place (for example by an FPS patch). The unchanged one is {}: copy it back over the changed one, or choose the 1080p class or DLSS off. (For more than 30 fps use the launcher's frame-rate setting.)",
+            exe.display(),
+            stock.display()
+        ),
+        None => format!(
+            "{} is not the unchanged retail executable of version 1.0.2.1 (another build, or changed in place, for example by an FPS patch). 1440p output and DLSS need the unchanged file: restore it, or choose the 1080p class or DLSS off.",
+            exe.display()
+        ),
+    }
+}
+
 fn title_executable(given: &Path) -> Result<std::path::PathBuf> {
     if !given.is_dir() {
         anyhow::ensure!(given.exists(), "{} does not exist: give the title's executable, or the folder it is in", given.display());
@@ -135,7 +170,8 @@ pub fn run(
         if upscaler.is_some() && render_1080p {
             println!("display        VICTORY_RENDER_1080P is left out: VICTORY_DLSS_MODE sets the scene's size");
         }
-        let (w, h) = native_1440p::prepare(&mut prepared, render_1080p && upscaler.is_none())?;
+        let (w, h) = native_1440p::prepare(&mut prepared, render_1080p && upscaler.is_none())
+            .map_err(|e| if victory_game::identify(&hash).is_some() { e } else { e.context(changed_copy(exe)) })?;
         // SAFETY: nothing else runs yet; the title and the display mode list
         // read these later.
         unsafe {
@@ -213,6 +249,12 @@ pub fn run(
     victory_hle::modules::files::mount_at('G', title_dir);
     let temp = cfg.data_subdir(&format!("{:08X}/temp", title.id))?;
     victory_hle::modules::files::mount_at('T', &temp);
+    // The F1 menu's save sharing, and an import it staged put in place before the title runs.
+    if let Some(data) = storage.parent()
+        && let Some(line) = victory_hle::save_share::start(data, title_dir)
+    {
+        println!("saves          {line}");
+    }
     victory_hle::runtime::set_title(victory_hle::runtime::Title { storage, ..title });
     victory_hle::console::set(match console {
         Console::SeriesX => victory_hle::console::Console::SeriesX,
@@ -242,7 +284,7 @@ pub fn run(
         );
         println!("missing dlls   {message}");
         // None of their imports can be bound, so the title stops at its first
-        // call into one (Grand Theft Auto VI 1.0.2.1 at +0x2237178 during
+        // call into one (the game, build 1.0.2.1, at +0x2237178 during
         // System Init, #930) with nothing saying why. Stubs only if asked for.
         if execute && matches!(unimplemented, Unimplemented::Trap) {
             anyhow::bail!(
@@ -379,7 +421,7 @@ fn watch(base: usize, size: usize) {
     let rvas: Vec<usize> = list
         .split(',')
         .filter_map(|r| usize::from_str_radix(r.trim().trim_start_matches("0x"), 16).ok())
-        .filter(|&rva| rva + 4 <= size)
+        .filter(|&rva| rva.checked_add(4).is_some_and(|end| end <= size))
         .collect();
     std::thread::spawn(move || {
         let mut seen = vec![None; rvas.len()];
@@ -439,7 +481,7 @@ fn timers(base: usize, size: usize) {
 
 /// Debugging aid: `VICTORY_POKE=<rva>:<byte>,...` (hex) writes the byte at
 /// each title+rva twice a second. A title that ends itself when its main
-/// loop has not ticked for a while (Grand Theft Auto VI: 30 s) runs on
+/// loop has not ticked for a while (the game: 30 s) runs on
 /// through slower frames with its tick flag poked. The address must be
 /// writable title data.
 #[cfg(all(windows, feature = "diagnostics"))]
