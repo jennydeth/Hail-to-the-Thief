@@ -39,6 +39,11 @@
 //! sky's light indoors too, a brown veil at sunset. `VICTORY_AMBIENT_AIR`
 //! bounds what the air scatters by a multiple of the light around.
 //!
+//! Transparent surfaces and particles take their light from a volume the
+//! title's rays fill: without them it holds the sky's light everywhere, and
+//! the dust of a room shows as white specks. `VICTORY_AMBIENT_ALPHA` bounds
+//! it as the air's ([`alpha`]).
+//!
 //! Reflections are traced too, at half the picture's size: rays the
 //! title's screen-space march resolves (`CS_ResolveScreenSpace`) take the
 //! light seen on screen; the others go to the structures, find nothing, and
@@ -71,6 +76,10 @@ pub(crate) enum Role {
     /// Gives the reflection rays that found nothing the sky's light
     /// (`CS_RayMiss`, not `CS_RayMiss_Volumetrics` nor the screen probes').
     Miss,
+    /// Filters the light of transparent surfaces and particles, a volume
+    /// before the eye (`CS_SpatialFilterAlpha`, the last program that writes
+    /// it).
+    Alpha,
 }
 
 /// The program's part in this, by its name in the container.
@@ -82,6 +91,8 @@ pub(crate) fn role(container: &[u8]) -> Option<Role> {
         Some(Role::Radiance)
     } else if has(b"CS_AccumulateLocalLightInscatteringVolume") {
         Some(Role::Air)
+    } else if has(b"CS_SpatialFilterAlpha") {
+        Some(Role::Alpha)
     } else if is_miss(container) {
         Some(Role::Miss)
     } else {
@@ -105,6 +116,9 @@ pub(crate) const DEPTH: (u8, u32) = (0, 464);
 pub(crate) const RADIANCE: (u8, u32) = (1, 16);
 /// Where the light the air scatters is.
 pub(crate) const AIR: (u8, u32) = (1, 32);
+/// Where the filter writes the light of transparent surfaces (a volume of
+/// R11G11B10; its direction goes to (1, 16)).
+pub(crate) const ALPHA: (u8, u32) = (1, 24);
 /// Where the miss program writes the reflected light (R11G11B10, half the
 /// picture's size) and where it reads the depth it is given (a 32-bit depth
 /// of the picture's size).
@@ -260,6 +274,28 @@ fn air() -> f32 {
     }
     static SET: OnceLock<f32> = OnceLock::new();
     *SET.get_or_init(|| parse_air(&std::env::var("VICTORY_AMBIENT_AIR").unwrap_or_default()))
+}
+
+/// The most light transparent surfaces and particles get from around them,
+/// as a multiple of the light around (`VICTORY_AMBIENT_ALPHA=<multiple>`;
+/// unset or 0: what the title has).
+///
+/// The title keeps that light in a volume before the eye (32x16 cells, 64
+/// deep; a mean and a direction a cell) from rays of its own
+/// (`CS_GatherAlphaVBuffer`, `CS_ShadeAlpha`, then a variance and a spatial
+/// filter). Without the structures its rays find the sky from everywhere,
+/// and the dust in a room's air is lit as under the open sky: white specks
+/// all over the picture (the first house of the story, RTX 3090 Ti; flipped
+/// on and off in one view with `VICTORY_AB`, they are there without the
+/// bound and gone with it, at 1 and at 4). Under the sky the light around is
+/// of the sky's order and the bound changes nothing seen (the deck outside
+/// that house, the same way).
+fn alpha() -> f32 {
+    static SET: OnceLock<f32> = OnceLock::new();
+    *SET.get_or_init(|| {
+        let set = std::env::var("VICTORY_AMBIENT_ALPHA").unwrap_or_default();
+        set.trim().parse().ok().filter(|v: &f32| v.is_finite() && *v > 0.0).unwrap_or(0.0)
+    })
 }
 
 /// Strength and radius of the creases' shade.
@@ -926,6 +962,9 @@ pub(crate) fn after(list: &HostList, role: Role, views: &Views) -> bool {
     if role == Role::Air && (constant > 0.0 || air() == 0.0) {
         return false;
     }
+    if role == Role::Alpha && (constant > 0.0 || alpha() == 0.0) {
+        return false;
+    }
     static SAID: Mutex<u32> = Mutex::new(0);
     {
         let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
@@ -947,7 +986,7 @@ pub(crate) fn after(list: &HostList, role: Role, views: &Views) -> bool {
     words[7] = views.depth_size[1];
     words[8] = 0.04f32.to_bits();
     words[9] = 4.0f32.to_bits();
-    words[10] = air().to_bits();
+    words[10] = if role == Role::Alpha { alpha() } else { air() }.to_bits();
     words[11] = if once() { 1.0f32 } else { 0.0 }.to_bits();
     words[12] = if horizon() { 1.0f32 } else { 0.0 }.to_bits();
     words[13] = bounce().to_bits();
@@ -976,7 +1015,9 @@ pub(crate) fn after(list: &HostList, role: Role, views: &Views) -> bool {
                 run(&pass.shrink, 40, 45, 1);
                 KEPT.store(true, Ordering::Relaxed);
             }
-            Role::Air => run(&pass.air, views.size[0].div_ceil(8), views.size[1].div_ceil(8), views.slices.div_ceil(2)),
+            Role::Air | Role::Alpha => {
+                run(&pass.air, views.size[0].div_ceil(8), views.size[1].div_ceil(8), views.slices.div_ceil(2))
+            }
             Role::Resolve => {
                 if constant == 0.0 {
                     run(&pass.place, 8, 9, 1);
@@ -1037,6 +1078,8 @@ mod tests {
         assert_eq!(role(b"..CS_ScreenProbes_TemporalResolve_a911b49c_Wrapped.."), Some(Role::Resolve));
         assert_eq!(role(b"..CS_CacheScreenSpaceRadiance_eed2fc35.."), Some(Role::Radiance));
         assert_eq!(role(b"CS_AccumulateLocalLightInscatteringVolume_7e2f5eef"), Some(Role::Air));
+        assert_eq!(role(b"..indirect_light_probes:CS_SpatialFilterAlpha_08e7839f_Wrapped.."), Some(Role::Alpha));
+        assert_eq!(role(b"..CS_VarianceFilterAlpha_b92710bc_Wrapped.."), None);
         assert_eq!(role(b"CS_TemporalResolve"), None);
         assert_eq!(role(b"..CS_RayMiss_de6b91a6_Wrapped.."), Some(Role::Miss));
         assert_eq!(role(b"..CS_RayMiss_Volumetrics_3c5d8c00_Wrapped.."), None);

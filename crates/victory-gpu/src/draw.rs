@@ -3783,7 +3783,20 @@ impl State {
     /// The stand-in for the indirect light after a dispatch of `p`
     /// (`crate::ambient`). Whether it recorded anything.
     fn ambient(&self, list: &HostList, p: &HostPipeline, role: crate::ambient::Role) -> bool {
-        use crate::ambient::{AIR, DEPTH, LIGHT, MISS_DEPTH, MISS_LIGHT, MissNote, RADIANCE, Role, Views};
+        use crate::ambient::{AIR, ALPHA, DEPTH, LIGHT, MISS_DEPTH, MISS_LIGHT, MissNote, RADIANCE, Role, Views};
+        // Each part has a switch of its own, on unless 0, that `VICTORY_AB` can flip while the
+        // title runs (diagnostics builds): one scene with and without it. The light the
+        // surfaces send out is kept either way.
+        let live = match role {
+            Role::Resolve => crate::toggled!("VICTORY_AMBIENT_ON"),
+            Role::Miss => crate::toggled!("VICTORY_AMBIENT_SPECULAR_ON"),
+            Role::Air => crate::toggled!("VICTORY_AMBIENT_AIR_ON"),
+            Role::Alpha => crate::toggled!("VICTORY_AMBIENT_ALPHA_ON"),
+            Role::Radiance => true,
+        };
+        if !live {
+            return false;
+        }
         let Some(t) = p.stages.first().map(|s| s.translated()) else {
             return false;
         };
@@ -3850,6 +3863,7 @@ impl State {
             Role::Resolve => LIGHT,
             Role::Radiance => RADIANCE,
             Role::Air => AIR,
+            Role::Alpha => ALPHA,
             Role::Miss => MISS_LIGHT,
         };
         // Variants of the miss program bind the rays' image and the depth at
@@ -4008,12 +4022,14 @@ impl State {
                 }
                 plain
             }),
-            Role::Radiance | Role::Air => image,
+            Role::Radiance | Role::Air | Role::Alpha => image,
         };
         let (Some((of, image)), Some((seen, depth))) = (image, depth) else {
             once!(?role, "no stand-in for the indirect light: other tables");
             if role == Role::Miss {
                 crate::ambient::note_miss(MissNote::NotReady);
+            }
+            if matches!(role, Role::Miss | Role::Alpha) {
                 // Once per program: what its tables hold, so one run names
                 // the place of the rays' image and of the depth.
                 static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -4070,8 +4086,8 @@ impl State {
             }
             _ => (seen.Width, seen.Height) == (of.Width, of.Height),
         };
-        if of.Format.0 != format || !sizes || volume != (role == Role::Air) {
-            once!(?role, format = of.Format.0, "no stand-in for the indirect light: another image");
+        if of.Format.0 != format || !sizes || volume != matches!(role, Role::Air | Role::Alpha) {
+            once!(?role, format = of.Format.0, width = of.Width, height = of.Height, slices = of.DepthOrArraySize, "no stand-in for the indirect light: another image");
             if role == Role::Miss {
                 crate::ambient::note_miss(MissNote::NotReady);
             }
@@ -5412,12 +5428,14 @@ impl State {
             self.drew(Some(p));
         }
         // The stand-in for reflections after the program that gives rays
-        // that found nothing the sky (`crate::ambient`, `Role::Miss`): the
+        // that found nothing the sky (`crate::ambient`, `Role::Miss`), and
+        // the bound of the transparent surfaces' light (`Role::Alpha`): the
         // execution held back is recorded first. (Not after one joined to
         // the run before: the tables noted are another program's.)
         if kind == DISPATCH
             && !joined
-            && let Some(role @ crate::ambient::Role::Miss) = p.stages.first().and_then(|s| s.shader.ambient)
+            && let Some(role @ (crate::ambient::Role::Miss | crate::ambient::Role::Alpha)) =
+                p.stages.first().and_then(|s| s.shader.ambient)
             && crate::ambient::on()
         {
             unsettle_indirect(list);
