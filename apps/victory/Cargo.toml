@@ -30,6 +30,8 @@ diagnostics = [
     "victory-loader/diagnostics",
     "victory-shader/diagnostics",
 ]
+# mimalloc as the process allocator in place of the system heap.
+mimalloc = ["victory-hle/mimalloc"]
 
 [lints]
 workspace = true
