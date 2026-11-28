@@ -159,6 +159,7 @@ fork's constant.
 | `VICTORY_AMBIENT=constant:<level>` | the same light everywhere |
 | `VICTORY_AMBIENT_SHADE=<strength>,<metres>` | the creases (1,0.6) |
 | `VICTORY_AMBIENT_OCCLUSION=horizon` or `creases` | creases shaded by ground-truth ambient occlusion with the light from the open side (default), or the earlier openness |
+| `VICTORY_AMBIENT_BOUNCE=<share>` | with `horizon`, the light of the surfaces that hide the sky comes back from them (1; 0 off) |
 | `VICTORY_AMBIENT_AIR=<multiple>` | what the air scatters is bounded by a multiple of the light around (off: the brown veil in the day room stays with it, light-14) |
 
 It is off while the builder runs.

@@ -18,3 +18,6 @@ AMBIENT_SHADE=1,0.6
 # AMBIENT_OCCLUSION: horizon (the default) shades contact and corners from the surfaces around and
 # takes the light from the open side; creases is the earlier, lighter shade.
 AMBIENT_OCCLUSION=horizon
+# AMBIENT_BOUNCE: with horizon, the share of the light nearby surfaces send back into the shade
+# they cast (coloured light between surfaces; 1 when not given, 0 turns it off).
+AMBIENT_BOUNCE=1

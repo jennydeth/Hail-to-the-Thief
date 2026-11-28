@@ -57,6 +57,10 @@ Known problems:
   people, beds and furniture sit in their shade. No cost measured on the RTX 3060: 15.00 fps
   against 14.98, the two flipped live every 20 s in one run. `AMBIENT_OCCLUSION=creases` in
   `lighting.txt` brings back the earlier look.
+- **Bounce light between nearby surfaces**: the surfaces the horizon search finds send the light
+  the title lit them with (the frame before, at 320x180) back into the shade they cast, so walls
+  and skin pick up the colour of what is next to them. No cost measured: 13.16 fps with it, 12.76
+  without, flipped live every 15 s in one run. `AMBIENT_BOUNCE=0` turns it off.
 - **Our own shaders are compiled with IEEE strictness.** Without it the compiler may fold away the
   NaN tests of the light estimate; on hyphennn's tree the shade then went black for good after a
   few minutes in half the runs.

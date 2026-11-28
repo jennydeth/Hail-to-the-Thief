@@ -31,6 +31,7 @@
 //! `VICTORY_AMBIENT_SHADE=<strength>,<radius in metres>` sets the shade of
 //! creases and corners: ground-truth ambient occlusion, or with
 //! `VICTORY_AMBIENT_OCCLUSION=creases` the earlier openness ([`horizon`]).
+//! `VICTORY_AMBIENT_BOUNCE`: the light the surfaces around send back ([`bounce`]).
 //! `VICTORY_AMBIENT_ONCE=1`: one bounce of the title's own light, without the
 //! stand-in's light coming back to it ([`once`]).
 //!
@@ -294,8 +295,27 @@ fn horizon() -> bool {
     *SET.get_or_init(|| parse_occlusion(&std::env::var("VICTORY_AMBIENT_OCCLUSION").unwrap_or_default()))
 }
 
+/// `VICTORY_AMBIENT_BOUNCE=<share>`: with the horizon search, the light the
+/// surfaces that hide a point's sky send out (as the title lit them, the
+/// frame before) comes back to it, that share of it: coloured light between
+/// nearby surfaces, blocked where it should be. 1 (the default) is all of
+/// it; 0 or `off` leaves it out. Measured on an RTX 3060, flipped live every
+/// 15 s in one run: 13.16 fps with it, 12.76 without.
+fn bounce() -> f32 {
+    let parse_bounce = |set: &str| match set.trim() {
+        "" => 1.0,
+        v if v.eq_ignore_ascii_case("off") => 0.0,
+        v => v.parse::<f32>().ok().filter(|v| v.is_finite() && *v >= 0.0).unwrap_or(1.0),
+    };
+    if let Some(v) = live_value("VICTORY_AMBIENT_BOUNCE") {
+        return parse_bounce(&v);
+    }
+    static SET: OnceLock<f32> = OnceLock::new();
+    *SET.get_or_init(|| parse_bounce(&std::env::var("VICTORY_AMBIENT_BOUNCE").unwrap_or_default()))
+}
+
 const SOURCE: &str = r#"
-#define RS "RootConstants(num32BitConstants=13, b0), DescriptorTable(SRV(t0)), DescriptorTable(UAV(u0)), UAV(u1), UAV(u2)"
+#define RS "RootConstants(num32BitConstants=14, b0), DescriptorTable(SRV(t0)), DescriptorTable(UAV(u0)), UAV(u1), UAV(u2), UAV(u3)"
 #define CX 64
 #define CY 36
 #define CELLS (CX * CY)
@@ -305,7 +325,7 @@ cbuffer Set : register(b0) {
     float level; float constant; float strength; float radius;
     float near; float tan_y; uint width; uint height;
     float follow; float most; float air; float once;
-    float horizon;
+    float horizon; float bounce;
 };
 Texture2D<float> depth : register(t0);
 // Cells: the light they send out (then, at CELLS, the slow mean), from
@@ -315,6 +335,11 @@ Texture2D<float> depth : register(t0);
 RWStructuredBuffer<float4> cells : register(u1);
 // Three a point: red, green and blue, each a mean and a direction.
 RWStructuredBuffer<float4> points : register(u2);
+// The light the visible surfaces send out (`CS_CacheScreenSpaceRadiance`), at
+// 320x180, for the light they bounce to their neighbours (`occlusion`).
+#define GX 320
+#define GY 180
+RWStructuredBuffer<float4> glow : register(u3);
 static const float3 LUMA = float3(0.2126, 0.7152, 0.0722);
 
 // The point seen at a texel, in metres from the eye (x right, y up, z away).
@@ -353,6 +378,20 @@ void mean() {
     float4 was = cells[CELLS];
     float3 now = sum / CELLS;
     cells[CELLS] = float4(was.a > 0.0 ? lerp(was.rgb, now, follow) : now, 1.0);
+}
+[RootSignature(RS)]
+[numthreads(8, 4, 1)]
+void shrink(uint3 at : SV_DispatchThreadID) {
+    uint w, h;
+    radiance.GetDimensions(w, h);
+    float3 sum = 0;
+    for (uint y = 0; y < 2; y++) for (uint x = 0; x < 2; x++) {
+        uint2 p = min(uint2((float2(at.xy) + (float2(x, y) + 0.5) / 2.0) * float2(w, h) / float2(GX, GY)), uint2(w - 1, h - 1));
+        float3 c = max(radiance[p], 0.0);
+        c = any(isnan(c)) || any(isinf(c)) ? 0.0 : c;
+        sum += c / max(1.0, dot(c, LUMA) / 20.0);
+    }
+    glow[at.y * GX + at.x] = float4(sum / 4.0, 1.0);
 }
 #endif
 
@@ -496,12 +535,23 @@ uint pack(float3 c) {
 // slices of the view around the point, the highest surface either way within
 // `radius` bounds the arc of sky it sees; the cosine-weighted share of the
 // arcs is the light that reaches it, their middle the direction it comes from.
-float occlusion(int2 p, float3 c, float3 n, float px, float noise, float2 size, out float3 bent) {
+// Each surface that raises a horizon hides the arc between the old and new
+// one; with `bounce`, the light it sends out (`glow`) comes in over that arc
+// instead (`lit`, in the same cosine-weighted share).
+float arc_to(float h, float na, float cn) {
+    return 0.25 * (cn + 2.0 * h * sin(na) - cos(2.0 * h - na));
+}
+float3 glow_at(int2 q, float2 size) {
+    uint2 g = min(uint2(max(float2(q), 0.0) * float2(GX, GY) / size), uint2(GX - 1, GY - 1));
+    return glow[g.y * GX + g.x].rgb;
+}
+float occlusion(int2 p, float3 c, float3 n, float px, float noise, float2 size, out float3 bent, out float3 lit) {
     const int SLICES = 3;
     const int STEPS = 6;
     float3 v = normalize(-c);
     float seen_all = 0.0;
     float3 toward = 0.0;
+    lit = 0.0;
     for (int s = 0; s < SLICES; s++) {
         float phi = (s + noise) * 3.14159265 / SLICES;
         float2 o = float2(cos(phi), sin(phi));
@@ -519,13 +569,30 @@ float occlusion(int2 p, float3 c, float3 n, float px, float noise, float2 size, 
         for (int i = 0; i < STEPS; i++) {
             float t = (i + frac(noise * 7.0 + s * 0.618034)) / STEPS;
             float2 step = o * max(t * t * px, 1.0 + i);
-            float3 d0 = seen(p + int2(round(step)), size) - c;
-            float3 d1 = seen(p - int2(round(step)), size) - c;
+            int2 q0 = p + int2(round(step)), q1 = p - int2(round(step));
+            float3 d0 = seen(q0, size) - c;
+            float3 d1 = seen(q1, size) - c;
             float l0 = length(d0), l1 = length(d1);
             float f0 = saturate(1.0 - l0 * l0 / (radius * radius));
             float f1 = saturate(1.0 - l1 * l1 / (radius * radius));
-            hc0 = max(hc0, lerp(low0, dot(d0, v) / max(l0, 1e-6), f0));
-            hc1 = max(hc1, lerp(low1, dot(d1, v) / max(l1, 1e-6), f1));
+            float n0 = max(hc0, lerp(low0, dot(d0, v) / max(l0, 1e-6), f0));
+            float n1 = max(hc1, lerp(low1, dot(d1, v) / max(l1, 1e-6), f1));
+            if (bounce > 0.0) {
+                // The + side's angles are from 0 to na + pi/2, the - side's
+                // from na - pi/2 to 0; a higher horizon is nearer 0.
+                if (n0 > hc0) {
+                    float a = min(acos(clamp(hc0, -1.0, 1.0)), na + 1.5707963);
+                    float b = min(acos(clamp(n0, -1.0, 1.0)), na + 1.5707963);
+                    lit += pl * max(arc_to(a, na, cn) - arc_to(b, na, cn), 0.0) * glow_at(q0, size);
+                }
+                if (n1 > hc1) {
+                    float a = max(-acos(clamp(hc1, -1.0, 1.0)), na - 1.5707963);
+                    float b = max(-acos(clamp(n1, -1.0, 1.0)), na - 1.5707963);
+                    lit += pl * max(arc_to(a, na, cn) - arc_to(b, na, cn), 0.0) * glow_at(q1, size);
+                }
+            }
+            hc0 = n0;
+            hc1 = n1;
         }
         float h0 = -acos(clamp(hc1, -1.0, 1.0));
         float h1 = acos(clamp(hc0, -1.0, 1.0));
@@ -539,6 +606,7 @@ float occlusion(int2 p, float3 c, float3 n, float px, float noise, float2 size, 
     bent = dot(toward, toward) > 1e-8 ? normalize(toward) : n;
     // Never past the surface's own side.
     bent = normalize(lerp(n, bent, saturate(dot(bent, n) * 2.0)));
+    lit /= SLICES;
     return seen_all / SLICES;
 }
 [RootSignature(RS)]
@@ -559,10 +627,11 @@ void raise(uint3 at : SV_DispatchThreadID) {
     // direction that light comes from on the whole.
     float open = 1.0;
     float3 bent = n;
+    float3 lit = 0.0;
     float px = min(radius * size.y / (2.0 * tan_y * c.z), 128.0);
     float noise = frac(52.9829189 * frac(dot(float2(p), float2(0.06711056, 0.00583715))));
     if (horizon > 0.0 && strength > 0.0 && px >= 1.5 && c.z < 400.0) {
-        open = pow(saturate(occlusion(p, c, n, px, noise, size, bent)), strength);
+        open = pow(saturate(occlusion(p, c, n, px, noise, size, bent, lit)), strength);
     } else if (strength > 0.0 && px >= 1.5 && c.z < 400.0) {
         float sum = 0.0;
         const int N = 12;
@@ -604,6 +673,8 @@ void raise(uint3 at : SV_DispatchThreadID) {
     found = all + 1.2 * float3(dot(sr.xyz, bent), dot(sg.xyz, bent), dot(sb.xyz, bent)) / sum;
     found = clamp(found, 0.2 * all, 2.5 * all);
     found = lerp(found, cells[CELLS].rgb, 0.2) * level * open;
+    // And from the surfaces that hide the sky, the light they send out.
+    if (bounce > 0.0 && !any(isnan(lit)) && !any(isinf(lit))) found += bounce * lit;
     float3 was = unpack(light[p]);
     // Magenta/violet garbage the probes' memory held (green far under red and
     // blue): dropped, as VIctory-Belobug-AMD does (ambient.rs, "Filter magenta
@@ -643,6 +714,7 @@ void raise(uint3 at : SV_DispatchThreadID) {
 const CELLS: u64 = 64 * 36;
 const CELL_BYTES: u64 = (2 * CELLS + 1 + 25 * CELLS) * 16;
 const POINT_BYTES: u64 = 160 * 90 * 48;
+const GLOW_BYTES: u64 = 320 * 180 * 16;
 
 struct Pass {
     root: ID3D12RootSignature,
@@ -651,10 +723,12 @@ struct Pass {
     place: ID3D12PipelineState,
     gather: ID3D12PipelineState,
     raise: ID3D12PipelineState,
+    shrink: ID3D12PipelineState,
     air: ID3D12PipelineState,
     reflect: ID3D12PipelineState,
     cells: ID3D12Resource,
     points: ID3D12Resource,
+    glow: ID3D12Resource,
 }
 // SAFETY: D3D12 objects are free-threaded.
 unsafe impl Send for Pass {}
@@ -683,6 +757,7 @@ fn make(device: &ID3D12Device, buffer: impl Fn(u64) -> Option<ID3D12Resource>) -
     let place = pipeline("PLACE", s!("place"))?;
     let gather = pipeline("GATHER", s!("gather"))?;
     let raise = pipeline("RAISE", s!("raise"))?;
+    let shrink = pipeline("KEEP", s!("shrink"))?;
     let air = pipeline("AIR", s!("clear_air"))?;
     let reflect = pipeline("REFLECT", s!("reflect_light"))?;
     let made = |bytes| buffer(bytes).ok_or_else(windows::core::Error::empty);
@@ -693,10 +768,12 @@ fn make(device: &ID3D12Device, buffer: impl Fn(u64) -> Option<ID3D12Resource>) -
         place,
         gather,
         raise,
+        shrink,
         air,
         reflect,
         cells: made(CELL_BYTES)?,
         points: made(POINT_BYTES)?,
+        glow: made(GLOW_BYTES)?,
     })
 }
 
@@ -859,9 +936,10 @@ pub(crate) fn after(list: &HostList, role: Role, views: &Views) -> bool {
     }
     list.keep(&pass.cells);
     list.keep(&pass.points);
+    list.keep(&pass.glow);
     let [strength, radius] = shade();
     let floats = [level, constant, strength, radius, 0.1, 0.45];
-    let mut words = [0u32; 13];
+    let mut words = [0u32; 14];
     for (to, v) in words.iter_mut().zip(floats) {
         *to = v.to_bits();
     }
@@ -872,6 +950,7 @@ pub(crate) fn after(list: &HostList, role: Role, views: &Views) -> bool {
     words[10] = air().to_bits();
     words[11] = if once() { 1.0f32 } else { 0.0 }.to_bits();
     words[12] = if horizon() { 1.0f32 } else { 0.0 }.to_bits();
+    words[13] = bounce().to_bits();
     let l = &list.list;
     // SAFETY: an open list with the heap of the views set; the title's
     // program has just used both views, so their textures are in the states
@@ -879,11 +958,12 @@ pub(crate) fn after(list: &HostList, role: Role, views: &Views) -> bool {
     unsafe {
         uav_barrier(l);
         l.SetComputeRootSignature(&pass.root);
-        l.SetComputeRoot32BitConstants(0, 13, words.as_ptr().cast(), 0);
+        l.SetComputeRoot32BitConstants(0, 14, words.as_ptr().cast(), 0);
         l.SetComputeRootDescriptorTable(1, views.depth);
         l.SetComputeRootDescriptorTable(2, views.image);
         l.SetComputeRootUnorderedAccessView(3, pass.cells.GetGPUVirtualAddress());
         l.SetComputeRootUnorderedAccessView(4, pass.points.GetGPUVirtualAddress());
+        l.SetComputeRootUnorderedAccessView(5, pass.glow.GetGPUVirtualAddress());
         let run = |pso: &ID3D12PipelineState, x, y, z| {
             l.SetPipelineState(pso);
             l.Dispatch(x, y, z);
@@ -893,6 +973,7 @@ pub(crate) fn after(list: &HostList, role: Role, views: &Views) -> bool {
             Role::Radiance => {
                 run(&pass.keep, 8, 9, 1);
                 run(&pass.mean, 1, 1, 1);
+                run(&pass.shrink, 40, 45, 1);
                 KEPT.store(true, Ordering::Relaxed);
             }
             Role::Air => run(&pass.air, views.size[0].div_ceil(8), views.size[1].div_ceil(8), views.slices.div_ceil(2)),
