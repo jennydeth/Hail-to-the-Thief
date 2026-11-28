@@ -57,6 +57,13 @@ Known problems:
   people, beds and furniture sit in their shade. No cost measured on the RTX 3060: 15.00 fps
   against 14.98, the two flipped live every 20 s in one run. `AMBIENT_OCCLUSION=creases` in
   `lighting.txt` brings back the earlier look.
+- **No frost on floors, no specks in the air** (KyleS98/VIctory-Neo `3aca295c`, `a6e85c68`, from
+  Vice-Tay, avatarmanz and beloooo): without ray tracing the title's reflections come out of their
+  temporal resolve far brighter than the room (sunlit floors looked rained on), and its
+  transparent surfaces and particles are lit as under the open sky (white specks everywhere
+  indoors). The launcher holds the first to the light around (`VICTORY_AMBIENT_REFLECT=1`) and
+  bounds the second (`VICTORY_AMBIENT_ALPHA=4`). Flipped every 10 s in one run on the RTX 3060:
+  frost gone with the hold, the four combinations 12.1 to 13.5 fps (no cost beyond the noise).
 - **Bounce light between nearby surfaces**: the surfaces the horizon search finds send the light
   the title lit them with (the frame before, at 320x180) back into the shade they cast, so walls
   and skin pick up the colour of what is next to them. No cost measured: 13.16 fps with it, 12.76

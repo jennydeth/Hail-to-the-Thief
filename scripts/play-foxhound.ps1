@@ -94,6 +94,10 @@ $settings = @{
     VICTORY_HEAP_SYNC_AT_SUBMIT = '1'
     # Light without the title's ray tracing: an estimate of indirect light and of reflections
     VICTORY_AMBIENT = '1.1'; VICTORY_AMBIENT_AIR = '1.5'; VICTORY_AMBIENT_SPECULAR = '0.5,0.5'
+    # Resolved reflections held to the light around (no frost or glow on floors, eyes and glass indoors), and the
+    # light of transparent surfaces and particles bounded (no white specks in the air): KyleS98/VIctory-Neo
+    VICTORY_AMBIENT_REFLECT = '1'; VICTORY_AMBIENT_REFLECT_IN = 'CS_TemporalResolve2_Opaque,CS_TemporalResolve1_Alpha'
+    VICTORY_AMBIENT_ALPHA = '4'
     # Pixel programs keep the console's early depth test
     VICTORY_EARLY_DEPTH = '1'
     # Left out: the decal heap's defragmentation (5.6 ms of GPU a frame) and the heat-haze pass (smeared blocks)
