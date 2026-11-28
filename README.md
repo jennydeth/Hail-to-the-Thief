@@ -36,7 +36,8 @@ hyphennn's, 7.8 with Series S, 12.6 on the NVIDIA megafork, 19 to 21 on this bas
 
 Known problems:
 
-- **No ray tracing** (the title's own is off: it costs most of the frame rate on this card). An
+- **No ray tracing** (the title's own is off: tried on 28 November it ran at 10 to 12 fps here,
+  about 30% slower, with dark walls and frosted floors). An
   estimate stands in for indirect light and reflections; tune it while playing (below).
 - **Stutter when a scene loads or a cutscene cuts**: two to three times the usual memory to copy,
   and pipelines still being made (F1, PRELOAD SHADERS, makes them all ahead).
